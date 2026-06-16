@@ -1,284 +1,364 @@
 <!DOCTYPE html>
-<html lang="zh-CN">
+<html lang="zh">
 <head>
-<meta charset="UTF-8" />
-<meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>AI Usage Display — Prototype</title>
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Project Bar — 赛道进度</title>
 <style>
+  /* ----------------------------------------------------------------
+     Project Bar — Stage 1 (local, single player)
+     8-bit / pixel aesthetic. No dependencies. Single file.
+     Core idea: a track is an SVG <path>; the car is a point sitting
+     at progress% along that path (getPointAtLength). Swap the path
+     data later (pen shape, one-stroke drawing) and everything else
+     keeps working unchanged.
+  ---------------------------------------------------------------- */
+
   :root {
-    --bg: #14161c;
-    --panel: #1c1f28;
-    --border: #2c3040;
-    --text: #e6e6ea;
-    --muted: #8b90a0;
-    --amber: #ffb454;
-    --teal: #4ed9c5;
-    --red: #ff6b6b;
+    --bg:        #0f1021;   /* deep night */
+    --bg-2:      #1a1c3a;   /* panel */
+    --track:     #3a3f6b;   /* asphalt */
+    --track-edge:#6b72b8;   /* lane edge */
+    --grid:      #21244a;
+    --car:       #ff4d6d;   /* player car */
+    --car-edge:  #ffe1e7;   /* car outline */
+    --accent:    #ffd23f;   /* checkered / highlights */
+    --text:      #e8e9ff;
+    --text-dim:  #8a8db5;
+    --finish:    #ffffff;
   }
 
   * { box-sizing: border-box; }
 
-  body {
+  html, body {
     margin: 0;
+    min-height: 100%;
     background: var(--bg);
     color: var(--text);
-    font-family: 'JetBrains Mono', monospace;
-    line-height: 1.6;
-    padding: 24px 16px 64px;
+    font-family: "Courier New", ui-monospace, monospace;
+    -webkit-font-smoothing: none;
   }
 
-  .wrap { max-width: 640px; margin: 0 auto; }
+  body {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding: 24px 16px 48px;
+    gap: 20px;
+  }
 
-  header { margin-bottom: 32px; }
-
-  .eyebrow {
-    color: var(--amber);
+  /* Pixel-style title */
+  .title {
+    text-align: center;
+    line-height: 1.1;
+  }
+  .title h1 {
+    margin: 0;
+    font-size: clamp(20px, 5vw, 34px);
+    letter-spacing: 3px;
+    text-transform: uppercase;
+    color: var(--accent);
+    text-shadow: 3px 3px 0 #000, 0 0 0 #000;
+  }
+  .title p {
+    margin: 6px 0 0;
     font-size: 12px;
-    letter-spacing: 0.2em;
+    letter-spacing: 2px;
+    color: var(--text-dim);
     text-transform: uppercase;
-    margin: 0 0 8px;
   }
 
-  h1 { font-size: 22px; margin: 0 0 8px; font-weight: 700; }
-  h2 { font-size: 15px; margin: 0 0 4px; font-weight: 700; }
-
-  .lead { color: var(--muted); font-size: 13px; margin: 0; }
-
-  section.panel {
-    background: var(--panel);
-    border: 1px solid var(--border);
-    border-radius: 10px;
-    padding: 18px;
-    margin-bottom: 20px;
+  /* Track stage */
+  .stage {
+    width: 100%;
+    max-width: 640px;
+    background: var(--bg-2);
+    border: 4px solid #000;
+    box-shadow: 0 0 0 4px var(--grid), 8px 8px 0 rgba(0,0,0,.5);
+    padding: 16px;
+    image-rendering: pixelated;
   }
 
-  .step-label {
-    color: var(--muted);
+  svg { width: 100%; height: auto; display: block; }
+
+  /* checkered grid backdrop inside the svg via CSS not needed; done in SVG */
+
+  /* Controls panel */
+  .panel {
+    width: 100%;
+    max-width: 640px;
+    background: var(--bg-2);
+    border: 4px solid #000;
+    box-shadow: 8px 8px 0 rgba(0,0,0,.5);
+    padding: 20px;
+    display: flex;
+    flex-direction: column;
+    gap: 18px;
+  }
+
+  .readout {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 12px;
+  }
+  .readout .pct {
+    font-size: clamp(36px, 10vw, 56px);
+    color: var(--accent);
+    letter-spacing: 2px;
+    text-shadow: 3px 3px 0 #000;
+  }
+  .readout .laps {
+    font-size: 13px;
+    letter-spacing: 1px;
+    color: var(--text-dim);
+    text-transform: uppercase;
+    text-align: right;
+  }
+  .readout .laps b { color: var(--text); }
+
+  /* Pixel slider */
+  input[type="range"] {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 100%;
+    height: 18px;
+    background: var(--track);
+    border: 3px solid #000;
+    box-shadow: inset 0 0 0 2px var(--track-edge);
+    cursor: pointer;
+  }
+  input[type="range"]::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 22px;
+    height: 22px;
+    background: var(--car);
+    border: 3px solid #000;
+    box-shadow: inset 0 0 0 2px var(--car-edge);
+    margin-top: 0;
+  }
+  input[type="range"]::-moz-range-thumb {
+    width: 22px;
+    height: 22px;
+    background: var(--car);
+    border: 3px solid #000;
+    box-shadow: inset 0 0 0 2px var(--car-edge);
+    border-radius: 0;
+  }
+
+  .row {
+    display: flex;
+    gap: 12px;
+    flex-wrap: wrap;
+    align-items: center;
+  }
+  .row label {
     font-size: 11px;
-    letter-spacing: 0.15em;
+    letter-spacing: 1px;
+    color: var(--text-dim);
     text-transform: uppercase;
-    margin-bottom: 6px;
+    width: 100%;
+  }
+
+  .num-input {
+    flex: 1 1 120px;
+    background: var(--bg);
+    color: var(--text);
+    border: 3px solid #000;
+    box-shadow: inset 0 0 0 2px var(--track-edge);
+    font-family: inherit;
+    font-size: 16px;
+    padding: 10px 12px;
+    min-width: 0;
   }
 
   button {
     font-family: inherit;
-    font-size: 13px;
-    font-weight: 700;
-    background: var(--amber);
-    color: #1a1408;
-    border: none;
-    border-radius: 6px;
+    font-size: 12px;
+    letter-spacing: 1px;
+    text-transform: uppercase;
+    color: #000;
+    background: var(--accent);
+    border: 3px solid #000;
+    box-shadow: 4px 4px 0 rgba(0,0,0,.6);
     padding: 10px 16px;
     cursor: pointer;
-    transition: opacity 0.15s ease;
   }
-  button:hover { opacity: 0.85; }
-  button:disabled { opacity: 0.4; cursor: not-allowed; }
+  button:active { transform: translate(2px,2px); box-shadow: 2px 2px 0 rgba(0,0,0,.6); }
+  button.ghost { background: var(--bg); color: var(--text); }
 
-  input[type="text"] {
-    font-family: inherit;
-    font-size: 13px;
-    width: 100%;
-    background: #11131a;
-    border: 1px solid var(--border);
-    color: var(--text);
-    border-radius: 6px;
-    padding: 10px 12px;
-    margin-bottom: 10px;
-  }
-
-  .status-line {
-    margin-top: 12px;
-    font-size: 12px;
-    color: var(--muted);
-    word-break: break-all;
-  }
-  .status-line.ok { color: var(--teal); }
-  .status-line.err { color: var(--red); }
-
-  .pixel-grid {
-    display: grid;
-    grid-template-columns: repeat(16, 1fr);
-    gap: 3px;
-    margin-top: 14px;
-  }
-  .pixel {
-    aspect-ratio: 1;
-    border-radius: 2px;
-    background: #2a2e3a;
-    transition: background 0.2s ease;
-  }
-  .pixel.on { background: var(--amber); }
-
-  .metrics {
-    display: flex;
-    gap: 18px;
-    margin-top: 14px;
-    flex-wrap: wrap;
-  }
-  .metric .value { font-size: 20px; font-weight: 700; color: var(--teal); }
-  .metric .label { font-size: 11px; color: var(--muted); letter-spacing: 0.1em; text-transform: uppercase; }
-
-  .note {
-    font-size: 12px;
-    color: var(--muted);
-    border-left: 2px solid var(--border);
-    padding-left: 10px;
-    margin-top: 14px;
-  }
-
-  pre {
-    background: #11131a;
-    border: 1px solid var(--border);
-    border-radius: 6px;
-    padding: 10px;
+  .hint {
     font-size: 11px;
-    overflow-x: auto;
-    margin-top: 10px;
+    line-height: 1.6;
+    color: var(--text-dim);
+    letter-spacing: .5px;
+  }
+
+  /* Accessibility: visible focus */
+  input:focus-visible, button:focus-visible {
+    outline: 3px solid var(--accent);
+    outline-offset: 2px;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .car-group { transition: none !important; }
   }
 </style>
 </head>
 <body>
-<div class="wrap">
-  <header>
-    <p class="eyebrow">Step 1 &amp; 2 — Prototype</p>
-    <h1>AI Usage Display</h1>
-    <p class="lead">两个独立的小实验：① 网页 ↔ 蓝牙设备连接 ② 调用 Claude API 拿到真实 token 用量。每个色块代表硬件屏幕上的一个像素。</p>
-  </header>
 
-  <!-- Step 1: Web Bluetooth -->
-  <section class="panel">
-    <p class="step-label">实验 1</p>
-    <h2>蓝牙连接（Web Bluetooth）</h2>
-    <p class="lead">点击按钮，浏览器会弹出附近的蓝牙设备列表。能弹出并选中任意设备，就说明这条链路是通的。</p>
-    <div style="margin-top: 12px;">
-      <button id="btnConnect">连接蓝牙设备</button>
+  <div class="title">
+    <h1>Project&nbsp;Bar</h1>
+    <p>Progress, but it's a racetrack</p>
+  </div>
+
+  <div class="stage">
+    <svg id="board" viewBox="0 0 320 200" xmlns="http://www.w3.org/2000/svg" aria-label="赛道">
+      <!-- pixel grid backdrop -->
+      <defs>
+        <pattern id="grid" width="16" height="16" patternUnits="userSpaceOnUse">
+          <path d="M16 0 L0 0 0 16" fill="none" stroke="var(--grid)" stroke-width="1"/>
+        </pattern>
+      </defs>
+      <rect x="0" y="0" width="320" height="200" fill="url(#grid)"/>
+
+      <!-- TRACK PATH ------------------------------------------------
+           This single path IS the track. Stage 1 = a wobbly loop.
+           To change the track shape later, replace only the `d`
+           attribute of #trackPath (e.g. a pen, a heart, a one-stroke
+           drawing). Car logic reads this path and needs no changes.
+      ------------------------------------------------------------- -->
+      <!-- asphalt: thick stroke -->
+      <path id="trackPath"
+            d="M 60 150 C 20 150 20 60 70 55 C 130 49 150 110 200 105 C 250 100 270 40 290 70 C 305 92 280 160 220 158 C 150 156 110 150 60 150 Z"
+            fill="none"
+            stroke="var(--track)"
+            stroke-width="22"
+            stroke-linejoin="round"
+            stroke-linecap="round"/>
+      <!-- lane edges: thin lighter stroke on top -->
+      <use href="#trackPath" stroke="var(--track-edge)" stroke-width="22" fill="none" opacity="0" />
+      <path d="M 60 150 C 20 150 20 60 70 55 C 130 49 150 110 200 105 C 250 100 270 40 290 70 C 305 92 280 160 220 158 C 150 156 110 150 60 150 Z"
+            fill="none" stroke="var(--track-edge)" stroke-width="2" stroke-dasharray="2 6" opacity="0.5"/>
+
+      <!-- start / finish marker (drawn at path start point, set by JS) -->
+      <g id="finishMark"></g>
+
+      <!-- the car: a dot with an outline. JS moves this group. -->
+      <g id="car" class="car-group">
+        <circle r="7" fill="var(--car)" stroke="#000" stroke-width="3"/>
+        <circle r="7" fill="none" stroke="var(--car-edge)" stroke-width="1.5"/>
+      </g>
+    </svg>
+  </div>
+
+  <div class="panel">
+    <div class="readout">
+      <div class="pct"><span id="pctText">0</span>%</div>
+      <div class="laps">
+        Lap <b id="lapText">0</b><br>
+        <span id="taskLabel">本圈任务</span>
+      </div>
     </div>
-    <div id="bleStatus" class="status-line">等待操作…</div>
-    <div class="note" id="bleNote"></div>
-  </section>
 
-  <!-- Step 2: Claude usage -->
-  <section class="panel">
-    <p class="step-label">实验 2</p>
-    <h2>获取 Claude Token 用量</h2>
-    <p class="lead">填入你部署的代理地址（见 README），点击按钮会向 Claude 发一条最小请求，并显示真实返回的 usage 数据。</p>
-    <input type="text" id="proxyUrl" placeholder="https://your-worker.your-name.workers.dev" />
-    <button id="btnFetch">获取用量</button>
-    <div id="usageStatus" class="status-line">等待操作…</div>
+    <input id="slider" type="range" min="0" max="100" value="0" step="1"
+           aria-label="进度百分比">
 
-    <div class="metrics" id="metrics" style="display:none;">
-      <div class="metric"><div class="value" id="mInput">–</div><div class="label">Input Tokens</div></div>
-      <div class="metric"><div class="value" id="mOutput">–</div><div class="label">Output Tokens</div></div>
-      <div class="metric"><div class="value" id="mModel">–</div><div class="label">Model</div></div>
+    <div class="row">
+      <label for="taskName">这一圈在比什么</label>
+      <input id="taskName" class="num-input" type="text"
+             placeholder="例如：读完这本书 / 写完报告" value="">
     </div>
 
-    <div class="pixel-grid" id="pixelGrid"></div>
-    <pre id="rawJson" style="display:none;"></pre>
-  </section>
-</div>
+    <div class="row">
+      <button id="resetBtn" class="ghost">回到起点</button>
+      <button id="lapBtn">完成一圈 +1</button>
+    </div>
+
+    <p class="hint">
+      拖动滑块 = 让车沿赛道前进。100% = 跑完一圈。<br>
+      阶段 1：本地单人。进度只存在这个页面里，刷新会清零。
+    </p>
+  </div>
 
 <script>
-  // ---------- Pixel grid (preview of hardware display) ----------
-  const grid = document.getElementById('pixelGrid');
-  const TOTAL_PIXELS = 64; // 16 x 4
-  for (let i = 0; i < TOTAL_PIXELS; i++) {
-    const px = document.createElement('div');
-    px.className = 'pixel';
-    grid.appendChild(px);
-  }
-  function lightPixels(count) {
-    const px = grid.children;
-    const lit = Math.min(count, TOTAL_PIXELS);
-    for (let i = 0; i < px.length; i++) {
-      px[i].classList.toggle('on', i < lit);
+(function () {
+  "use strict";
+
+  // --- element refs ---
+  const svg       = document.getElementById("board");
+  const path      = document.getElementById("trackPath");
+  const car       = document.getElementById("car");
+  const slider    = document.getElementById("slider");
+  const pctText   = document.getElementById("pctText");
+  const lapText   = document.getElementById("lapText");
+  const finishMark= document.getElementById("finishMark");
+  const resetBtn  = document.getElementById("resetBtn");
+  const lapBtn    = document.getElementById("lapBtn");
+  const taskName  = document.getElementById("taskName");
+  const taskLabel = document.getElementById("taskLabel");
+
+  // --- state ---
+  // The entire app state is this object. Stage 2 will sync an array
+  // of these (one per player) instead of a single local one.
+  const state = {
+    progress: 0,   // 0..100 within the current lap
+    laps: 0        // completed laps
+  };
+
+  // total length of the track path — the bridge between % and position
+  const totalLen = path.getTotalLength();
+
+  // place a small checkered start/finish marker at the path's origin
+  function drawFinish() {
+    const p0 = path.getPointAtLength(0);
+    // 4 tiny squares = checkered flag vibe
+    const s = 4;
+    let squares = "";
+    for (let i = 0; i < 4; i++) {
+      const fill = (i % 2 === 0) ? "var(--finish)" : "#000";
+      squares += `<rect x="${p0.x - s + (i%2)*s}" y="${p0.y - s + Math.floor(i/2)*s}" width="${s}" height="${s}" fill="${fill}"/>`;
     }
+    finishMark.innerHTML = squares;
   }
 
-  // ---------- Step 1: Web Bluetooth ----------
-  const btnConnect = document.getElementById('btnConnect');
-  const bleStatus = document.getElementById('bleStatus');
-  const bleNote = document.getElementById('bleNote');
-
-  if (!('bluetooth' in navigator)) {
-    bleStatus.textContent = '此浏览器不支持 Web Bluetooth';
-    bleStatus.classList.add('err');
-    bleNote.textContent = 'Web Bluetooth 目前仅 Chrome / Edge（桌面或 Android）支持。iOS 上的 Safari、以及所有 iPad 浏览器（包括 iPad 上的 Chrome，底层都是 WebKit）均不支持，需要换一台电脑或 Android 设备测试这一步。';
-    btnConnect.disabled = true;
-  } else {
-    bleNote.textContent = '提示：还没有自己的硬件时，可以先尝试连接手机/耳机等任意蓝牙设备，验证“弹出列表 → 选中 → 显示设备名”这条链路是否通畔。';
+  // move the car to a given progress (0..100) along the path
+  function render() {
+    const pct = Math.max(0, Math.min(100, state.progress));
+    const pt  = path.getPointAtLength((pct / 100) * totalLen);
+    car.setAttribute("transform", `translate(${pt.x}, ${pt.y})`);
+    pctText.textContent = Math.round(pct);
+    lapText.textContent = state.laps;
   }
 
-  btnConnect.addEventListener('click', async () => {
-    bleStatus.textContent = '正在搜索设备…';
-    bleStatus.className = 'status-line';
-    try {
-      const device = await navigator.bluetooth.requestDevice({
-        acceptAllDevices: true
-      });
-      bleStatus.textContent = `已选中设备：${device.name || '(未命名设备)'} / id: ${device.id}`;
-      bleStatus.classList.add('ok');
-
-      device.addEventListener('gattserverdisconnected', () => {
-        bleStatus.textContent = `设备已断开：${device.name || '(未命名设备)'}`;
-        bleStatus.className = 'status-line';
-      });
-
-      try {
-        const server = await device.gatt.connect();
-        bleStatus.textContent += ' — GATT 连接成功 ✔';
-      } catch (gattErr) {
-        bleStatus.textContent += ` — 已选中但 GATT 连接失败（多数现成设备会拒绝，这是正常的）：${gattErr.message}`;
-      }
-    } catch (err) {
-      bleStatus.textContent = `操作取消或出错：${err.message}`;
-      bleStatus.classList.add('err');
-    }
+  // --- events ---
+  slider.addEventListener("input", function () {
+    state.progress = Number(slider.value);
+    render();
   });
 
-  // ---------- Step 2: Claude usage via proxy ----------
-  const btnFetch = document.getElementById('btnFetch');
-  const usageStatus = document.getElementById('usageStatus');
-  const metrics = document.getElementById('metrics');
-  const rawJson = document.getElementById('rawJson');
-
-  btnFetch.addEventListener('click', async () => {
-    const url = document.getElementById('proxyUrl').value.trim();
-    if (!url) {
-      usageStatus.textContent = '请先填入代理地址';
-      usageStatus.className = 'status-line err';
-      return;
-    }
-    usageStatus.textContent = '请求中…';
-    usageStatus.className = 'status-line';
-    btnFetch.disabled = true;
-
-    try {
-      const resp = await fetch(url, { method: 'POST' });
-      if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
-      const data = await resp.json();
-
-      document.getElementById('mInput').textContent = data.usage?.input_tokens ?? '–';
-      document.getElementById('mOutput').textContent = data.usage?.output_tokens ?? '–';
-      document.getElementById('mModel').textContent = data.model ?? '–';
-      metrics.style.display = 'flex';
-
-      lightPixels((data.usage?.input_tokens || 0) + (data.usage?.output_tokens || 0));
-
-      rawJson.textContent = JSON.stringify(data, null, 2);
-      rawJson.style.display = 'block';
-
-      usageStatus.textContent = '获取成功 ✔';
-      usageStatus.className = 'status-line ok';
-    } catch (err) {
-      usageStatus.textContent = `请求失败：${err.message}`;
-      usageStatus.className = 'status-line err';
-    } finally {
-      btnFetch.disabled = false;
-    }
+  resetBtn.addEventListener("click", function () {
+    state.progress = 0;
+    slider.value = 0;
+    render();
   });
+
+  lapBtn.addEventListener("click", function () {
+    state.laps += 1;
+    state.progress = 0;
+    slider.value = 0;
+    render();
+  });
+
+  taskName.addEventListener("input", function () {
+    taskLabel.textContent = taskName.value.trim() || "本圈任务";
+  });
+
+  // --- init ---
+  drawFinish();
+  render();
+})();
 </script>
 </body>
 </html>
