@@ -5,9 +5,9 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Project Bar — 赛道进度</title>
 <!-- Overlay mode: when loaded by the Tauri shell the URL carries #overlay.
-     We flip the page background to transparent so the desktop shows through.
-     In a plain browser (no #overlay) the deep-night theme is kept intact,
-     so the UI still runs standalone (architecture invariant #2). -->
+     We flip the page background to transparent so the desktop shows through
+     and the track floats like a desktop pet (Bongo-Cat style). In a plain
+     browser (no #overlay) we keep a dark backdrop so it stays visible. -->
 <script>
   if (location.hash.indexOf("overlay") !== -1) {
     document.documentElement.classList.add("overlay");
@@ -15,206 +15,196 @@
 </script>
 <style>
   /* ----------------------------------------------------------------
-     Project Bar — Stage 1 (local, single player)
+     Project Bar — Stage 1 overlay (Bongo-Cat style sticker)
      8-bit / pixel aesthetic. No dependencies. Single file.
-     Core idea: a track is an SVG <path>; the car is a point sitting
-     at progress% along that path (getPointAtLength). Swap the path
-     data later (pen shape, one-stroke drawing) and everything else
-     keeps working unchanged.
+     Core idea: the track is an SVG <path>; the car is a point sitting
+     at progress% along that path (getPointAtLength). Swap the path data
+     later (pen shape, one-stroke drawing) and everything keeps working.
   ---------------------------------------------------------------- */
 
   :root {
-    --bg:        #0f1021;   /* deep night */
-    --bg-2:      #1a1c3a;   /* panel */
+    --bg:        #0f1021;   /* deep night (browser backdrop only) */
     --track:     #3a3f6b;   /* asphalt */
     --track-edge:#6b72b8;   /* lane edge */
-    --grid:      #21244a;
     --car:       #ff4d6d;   /* player car */
     --car-edge:  #ffe1e7;   /* car outline */
     --accent:    #ffd23f;   /* checkered / highlights */
     --text:      #e8e9ff;
     --text-dim:  #8a8db5;
     --finish:    #ffffff;
+    --panel:     rgba(15,16,33,.82);   /* bar / menu backdrop */
   }
 
   * { box-sizing: border-box; }
 
   html, body {
     margin: 0;
-    min-height: 100%;
     background: var(--bg);
     color: var(--text);
     font-family: "Courier New", ui-monospace, monospace;
     -webkit-font-smoothing: none;
   }
 
-  /* Overlay mode (Tauri shell): desktop shows through. The track stage and
-     control panel keep their own opaque card backgrounds, so they float as
-     a "sticker" while the gaps around them become transparent. */
-  html.overlay, html.overlay body { background: transparent !important; }
+  /* Overlay mode (Tauri shell): desktop shows through, no scrollbars.
+     The track keeps only its own outline; the bar/menu keep a translucent
+     backdrop so text stays readable on any wallpaper. */
+  html.overlay, html.overlay body {
+    background: transparent !important;
+    overflow: hidden;
+  }
 
   body {
     display: flex;
     flex-direction: column;
     align-items: center;
-    padding: 24px 16px 48px;
-    gap: 20px;
+    justify-content: flex-start;
+    gap: 8px;
+    padding: 8px;
+    min-height: 100vh;
   }
 
-  /* Pixel-style title */
-  .title {
-    text-align: center;
-    line-height: 1.1;
-  }
-  .title h1 {
-    margin: 0;
-    font-size: clamp(20px, 5vw, 34px);
-    letter-spacing: 3px;
-    text-transform: uppercase;
-    color: var(--accent);
-    text-shadow: 3px 3px 0 #000, 0 0 0 #000;
-  }
-  .title p {
-    margin: 6px 0 0;
-    font-size: 12px;
-    letter-spacing: 2px;
-    color: var(--text-dim);
-    text-transform: uppercase;
-  }
-
-  /* Track stage */
-  .stage {
+  .app {
+    position: relative;
     width: 100%;
-    max-width: 640px;
-    background: var(--bg-2);
-    border: 4px solid #000;
-    box-shadow: 0 0 0 4px var(--grid), 8px 8px 0 rgba(0,0,0,.5);
-    padding: 16px;
-    image-rendering: pixelated;
-  }
-
-  svg { width: 100%; height: auto; display: block; }
-
-  /* checkered grid backdrop inside the svg via CSS not needed; done in SVG */
-
-  /* Controls panel */
-  .panel {
-    width: 100%;
-    max-width: 640px;
-    background: var(--bg-2);
-    border: 4px solid #000;
-    box-shadow: 8px 8px 0 rgba(0,0,0,.5);
-    padding: 20px;
+    max-width: 360px;
     display: flex;
     flex-direction: column;
-    gap: 18px;
+    align-items: center;
+    gap: 8px;
+    user-select: none;
+    -webkit-user-select: none;
   }
 
-  .readout {
+  /* The track: just the outline, no frame. The whole svg is a drag handle. */
+  .track {
+    width: 100%;
+    height: auto;
+    display: block;
+    overflow: visible;
+    cursor: grab;
+  }
+  .track:active { cursor: grabbing; }
+  .car-group { transition: transform .12s linear; }
+
+  /* Compact info bar -------------------------------------------------- */
+  .bar {
+    width: 100%;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    background: var(--panel);
+    border: 3px solid #000;
+    box-shadow: 3px 3px 0 rgba(0,0,0,.5);
+    padding: 6px 6px 6px 10px;
+    cursor: grab;
+  }
+  .bar:active { cursor: grabbing; }
+
+  .bar-info {
+    flex: 1;
+    min-width: 0;
     display: flex;
     align-items: baseline;
-    justify-content: space-between;
-    gap: 12px;
+    gap: 8px;
+    font-size: 12px;
+    letter-spacing: .5px;
+    white-space: nowrap;
+    overflow: hidden;
   }
-  .readout .pct {
-    font-size: clamp(36px, 10vw, 56px);
+  .bar-info .task {
     color: var(--accent);
-    letter-spacing: 2px;
-    text-shadow: 3px 3px 0 #000;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    max-width: 48%;
   }
-  .readout .laps {
-    font-size: 13px;
-    letter-spacing: 1px;
-    color: var(--text-dim);
-    text-transform: uppercase;
-    text-align: right;
-  }
-  .readout .laps b { color: var(--text); }
+  .bar-info .sep { color: var(--text-dim); }
+  .bar-info .pct { color: var(--text); }
+  .bar-info .pct b { color: var(--accent); font-size: 14px; }
+  .bar-info .lap { color: var(--text-dim); text-transform: uppercase; }
+  .bar-info .lap b { color: var(--text); }
 
-  /* Pixel slider */
-  input[type="range"] {
-    -webkit-appearance: none;
-    appearance: none;
-    width: 100%;
-    height: 18px;
-    background: var(--track);
+  .menu-btn {
+    flex: 0 0 auto;
+    font-family: inherit;
+    font-size: 15px;
+    line-height: 1;
+    color: #000;
+    background: var(--accent);
     border: 3px solid #000;
-    box-shadow: inset 0 0 0 2px var(--track-edge);
+    box-shadow: 2px 2px 0 rgba(0,0,0,.6);
+    width: 32px;
+    height: 28px;
+    padding: 0;
     cursor: pointer;
   }
-  input[type="range"]::-webkit-slider-thumb {
-    -webkit-appearance: none;
-    appearance: none;
-    width: 22px;
-    height: 22px;
-    background: var(--car);
-    border: 3px solid #000;
-    box-shadow: inset 0 0 0 2px var(--car-edge);
-    margin-top: 0;
-  }
-  input[type="range"]::-moz-range-thumb {
-    width: 22px;
-    height: 22px;
-    background: var(--car);
-    border: 3px solid #000;
-    box-shadow: inset 0 0 0 2px var(--car-edge);
-    border-radius: 0;
-  }
+  .menu-btn:active { transform: translate(2px,2px); box-shadow: none; }
 
-  .row {
+  /* Popovers float above the bar so they never overflow the small window */
+  .menu, .edit-row {
+    position: absolute;
+    bottom: 46px;
+    background: rgba(15,16,33,.94);
+    border: 3px solid #000;
+    box-shadow: 3px 3px 0 rgba(0,0,0,.5);
+    z-index: 5;
+  }
+  .menu {
+    right: 0;
+    width: 180px;
     display: flex;
-    gap: 12px;
-    flex-wrap: wrap;
-    align-items: center;
+    flex-direction: column;
   }
-  .row label {
-    font-size: 11px;
-    letter-spacing: 1px;
-    color: var(--text-dim);
-    text-transform: uppercase;
-    width: 100%;
-  }
+  .menu[hidden], .edit-row[hidden] { display: none; }
 
-  .num-input {
-    flex: 1 1 120px;
+  .menu-item {
+    font-family: inherit;
+    font-size: 12px;
+    letter-spacing: .5px;
+    text-align: left;
+    color: var(--text);
+    background: transparent;
+    border: none;
+    border-bottom: 1px solid rgba(255,255,255,.08);
+    padding: 10px 12px;
+    cursor: pointer;
+  }
+  .menu-item:last-child { border-bottom: none; }
+  .menu-item:hover { background: rgba(255,255,255,.08); }
+  .menu-item.danger { color: var(--car); }
+
+  .edit-row {
+    left: 0;
+    right: 0;
+    display: flex;
+    gap: 6px;
+    padding: 6px;
+  }
+  .edit-row input {
+    flex: 1;
+    min-width: 0;
     background: var(--bg);
     color: var(--text);
     border: 3px solid #000;
     box-shadow: inset 0 0 0 2px var(--track-edge);
     font-family: inherit;
-    font-size: 16px;
-    padding: 10px 12px;
-    min-width: 0;
+    font-size: 13px;
+    padding: 7px 9px;
   }
-
-  button {
+  .edit-row button {
     font-family: inherit;
     font-size: 12px;
-    letter-spacing: 1px;
-    text-transform: uppercase;
     color: #000;
     background: var(--accent);
     border: 3px solid #000;
-    box-shadow: 4px 4px 0 rgba(0,0,0,.6);
-    padding: 10px 16px;
+    box-shadow: 2px 2px 0 rgba(0,0,0,.6);
+    padding: 0 12px;
     cursor: pointer;
   }
-  button:active { transform: translate(2px,2px); box-shadow: 2px 2px 0 rgba(0,0,0,.6); }
-  button.ghost { background: var(--bg); color: var(--text); }
 
-  .hint {
-    font-size: 11px;
-    line-height: 1.6;
-    color: var(--text-dim);
-    letter-spacing: .5px;
-  }
-
-  /* Accessibility: visible focus */
   input:focus-visible, button:focus-visible {
     outline: 3px solid var(--accent);
     outline-offset: 2px;
   }
-
   @media (prefers-reduced-motion: reduce) {
     .car-group { transition: none !important; }
   }
@@ -222,41 +212,31 @@
 </head>
 <body>
 
-  <div class="title">
-    <h1>Project&nbsp;Bar</h1>
-    <p>Progress, but it's a racetrack</p>
-  </div>
+  <div class="app" id="app">
 
-  <div class="stage">
-    <svg id="board" viewBox="0 0 320 200" xmlns="http://www.w3.org/2000/svg" aria-label="赛道">
-      <!-- pixel grid backdrop -->
-      <defs>
-        <pattern id="grid" width="16" height="16" patternUnits="userSpaceOnUse">
-          <path d="M16 0 L0 0 0 16" fill="none" stroke="var(--grid)" stroke-width="1"/>
-        </pattern>
-      </defs>
-      <rect x="0" y="0" width="320" height="200" fill="url(#grid)"/>
-
-      <!-- TRACK PATH ------------------------------------------------
-           This single path IS the track. Stage 1 = a wobbly loop.
-           To change the track shape later, replace only the `d`
-           attribute of #trackPath (e.g. a pen, a heart, a one-stroke
-           drawing). Car logic reads this path and needs no changes.
-      ------------------------------------------------------------- -->
-      <!-- asphalt: thick stroke -->
+    <!-- TRACK ------------------------------------------------------------
+         This single path IS the track (only its outline is drawn now —
+         no frame, no grid). To change the track shape later, replace only
+         the `d` attribute of #trackPath. Car logic reads this path and
+         needs no changes.
+    ------------------------------------------------------------------- -->
+    <svg id="board" class="track" viewBox="0 0 320 200"
+         xmlns="http://www.w3.org/2000/svg" aria-label="赛道">
+      <!-- dark outline underneath: keeps the track readable on any wallpaper -->
+      <path d="M 60 150 C 20 150 20 60 70 55 C 130 49 150 110 200 105 C 250 100 270 40 290 70 C 305 92 280 160 220 158 C 150 156 110 150 60 150 Z"
+            fill="none" stroke="#000" stroke-width="27"
+            stroke-linejoin="round" stroke-linecap="round" opacity="0.55"/>
+      <!-- asphalt: the track itself -->
       <path id="trackPath"
             d="M 60 150 C 20 150 20 60 70 55 C 130 49 150 110 200 105 C 250 100 270 40 290 70 C 305 92 280 160 220 158 C 150 156 110 150 60 150 Z"
-            fill="none"
-            stroke="var(--track)"
-            stroke-width="22"
-            stroke-linejoin="round"
-            stroke-linecap="round"/>
-      <!-- lane edges: thin lighter stroke on top -->
-      <use href="#trackPath" stroke="var(--track-edge)" stroke-width="22" fill="none" opacity="0" />
+            fill="none" stroke="var(--track)" stroke-width="22"
+            stroke-linejoin="round" stroke-linecap="round"/>
+      <!-- dashed centre line -->
       <path d="M 60 150 C 20 150 20 60 70 55 C 130 49 150 110 200 105 C 250 100 270 40 290 70 C 305 92 280 160 220 158 C 150 156 110 150 60 150 Z"
-            fill="none" stroke="var(--track-edge)" stroke-width="2" stroke-dasharray="2 6" opacity="0.5"/>
+            fill="none" stroke="var(--track-edge)" stroke-width="2"
+            stroke-dasharray="2 6" opacity="0.6"/>
 
-      <!-- start / finish marker (drawn at path start point, set by JS) -->
+      <!-- start / finish marker (drawn at path start, set by JS) -->
       <g id="finishMark"></g>
 
       <!-- the car: a dot with an outline. JS moves this group. -->
@@ -265,108 +245,144 @@
         <circle r="7" fill="none" stroke="var(--car-edge)" stroke-width="1.5"/>
       </g>
     </svg>
-  </div>
 
-  <div class="panel">
-    <div class="readout">
-      <div class="pct"><span id="pctText">0</span>%</div>
-      <div class="laps">
-        Lap <b id="lapText">0</b><br>
-        <span id="taskLabel">本圈任务</span>
+    <!-- COMPACT BAR ------------------------------------------------------ -->
+    <div class="bar" id="bar">
+      <div class="bar-info">
+        <span class="task" id="taskLabel">本圈任务</span>
+        <span class="sep">·</span>
+        <span class="pct"><b id="pctText">0</b>%</span>
+        <span class="sep">·</span>
+        <span class="lap">Lap <b id="lapText">0</b></span>
       </div>
+      <button class="menu-btn" id="menuBtn" data-no-drag
+              aria-label="菜单" aria-haspopup="true">≡</button>
     </div>
 
-    <input id="slider" type="range" min="0" max="100" value="0" step="1"
-           aria-label="进度百分比">
-
-    <div class="row">
-      <label for="taskName">这一圈在比什么</label>
-      <input id="taskName" class="num-input" type="text"
-             placeholder="例如：读完这本书 / 写完报告" value="">
+    <!-- MENU (hidden until ≡) -------------------------------------------- -->
+    <div class="menu" id="menu" data-no-drag hidden>
+      <button class="menu-item" id="editBtn">✎ 编辑任务</button>
+      <button class="menu-item danger" id="closeBtn">✕ 关闭程序</button>
     </div>
 
-    <div class="row">
-      <button id="resetBtn" class="ghost">回到起点</button>
-      <button id="lapBtn">完成一圈 +1</button>
+    <!-- INLINE TASK EDITOR (opened from menu) ---------------------------- -->
+    <div class="edit-row" id="editRow" data-no-drag hidden>
+      <input id="taskInput" type="text" maxlength="40"
+             placeholder="在比什么…" aria-label="任务名称">
+      <button id="saveBtn">OK</button>
     </div>
 
-    <p class="hint">
-      拖动滑块 = 让车沿赛道前进。100% = 跑完一圈。<br>
-      阶段 1：本地单人。进度只存在这个页面里，刷新会清零。
-    </p>
   </div>
 
 <script>
 (function () {
   "use strict";
 
-  // --- element refs ---
-  const svg       = document.getElementById("board");
-  const path      = document.getElementById("trackPath");
-  const car       = document.getElementById("car");
-  const slider    = document.getElementById("slider");
-  const pctText   = document.getElementById("pctText");
-  const lapText   = document.getElementById("lapText");
-  const finishMark= document.getElementById("finishMark");
-  const resetBtn  = document.getElementById("resetBtn");
-  const lapBtn    = document.getElementById("lapBtn");
-  const taskName  = document.getElementById("taskName");
-  const taskLabel = document.getElementById("taskLabel");
+  const $ = function (id) { return document.getElementById(id); };
+
+  const app        = $("app");
+  const path       = $("trackPath");
+  const car        = $("car");
+  const finishMark = $("finishMark");
+  const pctText    = $("pctText");
+  const lapText    = $("lapText");
+  const taskLabel  = $("taskLabel");
+  const menuBtn    = $("menuBtn");
+  const menu       = $("menu");
+  const editBtn    = $("editBtn");
+  const closeBtn   = $("closeBtn");
+  const editRow    = $("editRow");
+  const taskInput  = $("taskInput");
+  const saveBtn    = $("saveBtn");
+
+  // Tauri APIs exist only inside the shell (withGlobalTauri + remote
+  // capability). Guarded so the page still runs standalone in a browser.
+  const TW        = window.__TAURI__ && window.__TAURI__.window;
+  const appWindow = TW ? TW.getCurrentWindow() : null;
 
   // --- state ---
-  // The entire app state is this object. Stage 2 will sync an array
-  // of these (one per player) instead of a single local one.
+  // Stage 2 will sync an array of these (one per player). Progress is driven
+  // by the Rust keycount in Stage B; for now the car rests at the start.
+  const STORE_KEY = "projectbar.task";
   const state = {
-    progress: 0,   // 0..100 within the current lap
-    laps: 0        // completed laps
+    progress: 0,
+    laps: 0,
+    task: localStorage.getItem(STORE_KEY) || ""
   };
 
   // total length of the track path — the bridge between % and position
   const totalLen = path.getTotalLength();
 
-  // place a small checkered start/finish marker at the path's origin
+  // small checkered start/finish marker at the path origin
   function drawFinish() {
     const p0 = path.getPointAtLength(0);
-    // 4 tiny squares = checkered flag vibe
     const s = 4;
     let squares = "";
     for (let i = 0; i < 4; i++) {
       const fill = (i % 2 === 0) ? "var(--finish)" : "#000";
-      squares += `<rect x="${p0.x - s + (i%2)*s}" y="${p0.y - s + Math.floor(i/2)*s}" width="${s}" height="${s}" fill="${fill}"/>`;
+      squares += '<rect x="' + (p0.x - s + (i % 2) * s) + '" y="' +
+                 (p0.y - s + Math.floor(i / 2) * s) +
+                 '" width="' + s + '" height="' + s + '" fill="' + fill + '"/>';
     }
     finishMark.innerHTML = squares;
   }
 
-  // move the car to a given progress (0..100) along the path
+  // move the car to progress (0..100) along the path
   function render() {
     const pct = Math.max(0, Math.min(100, state.progress));
-    const pt  = path.getPointAtLength((pct / 100) * totalLen);
-    car.setAttribute("transform", `translate(${pt.x}, ${pt.y})`);
+    const pt = path.getPointAtLength((pct / 100) * totalLen);
+    car.setAttribute("transform", "translate(" + pt.x + ", " + pt.y + ")");
     pctText.textContent = Math.round(pct);
     lapText.textContent = state.laps;
+    taskLabel.textContent = state.task.trim() || "本圈任务";
   }
 
-  // --- events ---
-  slider.addEventListener("input", function () {
-    state.progress = Number(slider.value);
-    render();
+  // --- menu ---
+  function closeMenu() { menu.hidden = true; }
+  menuBtn.addEventListener("click", function (e) {
+    e.stopPropagation();
+    menu.hidden = !menu.hidden;
+  });
+  document.addEventListener("click", function (e) {
+    if (!menu.hidden && !menu.contains(e.target) && e.target !== menuBtn) {
+      closeMenu();
+    }
   });
 
-  resetBtn.addEventListener("click", function () {
-    state.progress = 0;
-    slider.value = 0;
+  // --- edit task ---
+  editBtn.addEventListener("click", function () {
+    closeMenu();
+    editRow.hidden = false;
+    taskInput.value = state.task;
+    taskInput.focus();
+    taskInput.select();
+  });
+  function saveTask() {
+    state.task = taskInput.value.trim();
+    localStorage.setItem(STORE_KEY, state.task);
+    editRow.hidden = true;
     render();
+  }
+  saveBtn.addEventListener("click", saveTask);
+  taskInput.addEventListener("keydown", function (e) {
+    if (e.key === "Enter") saveTask();
+    else if (e.key === "Escape") editRow.hidden = true;
   });
 
-  lapBtn.addEventListener("click", function () {
-    state.laps += 1;
-    state.progress = 0;
-    slider.value = 0;
-    render();
+  // --- close program ---
+  closeBtn.addEventListener("click", function () {
+    closeMenu();
+    if (appWindow) appWindow.close();
+    else window.close();
   });
 
-  taskName.addEventListener("input", function () {
-    taskLabel.textContent = taskName.value.trim() || "本圈任务";
+  // --- drag to move the window ---
+  // Grab the track or the bar's empty space; buttons/menus opt out via
+  // [data-no-drag] so clicks still register.
+  app.addEventListener("pointerdown", function (e) {
+    if (e.button !== 0) return;
+    if (e.target.closest("[data-no-drag]")) return;
+    if (appWindow) appWindow.startDragging();
   });
 
   // --- init ---
