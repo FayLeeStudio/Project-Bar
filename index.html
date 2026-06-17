@@ -298,13 +298,20 @@
   // Tauri APIs exist only inside the shell (withGlobalTauri + remote
   // capability). Guarded so the page still runs standalone in a browser.
   const TW        = window.__TAURI__ && window.__TAURI__.window;
+  const TE        = window.__TAURI__ && window.__TAURI__.event;
   const appWindow = TW ? TW.getCurrentWindow() : null;
 
   // --- state ---
   // Stage 2 will sync an array of these (one per player). Progress is driven
-  // by the Rust keycount in Stage B; for now the car rests at the start.
+  // by the Rust keycount in Stage B (keystrokes + mouse clicks).
   const STORE_KEY = "projectbar.task";
+
+  // One lap = this many inputs. Static preset for now; adjustable later via
+  // this localStorage key (a settings UI comes later).
+  const PER_LAP = Number(localStorage.getItem("projectbar.perlap")) || 100;
+
   const state = {
+    count: 0,
     progress: 0,
     laps: 0,
     task: localStorage.getItem(STORE_KEY) || ""
@@ -335,6 +342,18 @@
     pctText.textContent = Math.round(pct);
     lapText.textContent = state.laps;
     taskLabel.textContent = state.task.trim() || "本圈任务";
+  }
+
+  // --- live input count from the Rust shell (Stage B) ---
+  // The shell only ever sends a running total; it never records which keys.
+  function applyCount(count) {
+    state.count = count;
+    state.laps = Math.floor(count / PER_LAP);
+    state.progress = (count % PER_LAP) / PER_LAP * 100;
+    render();
+  }
+  if (TE) {
+    TE.listen("keycount", function (e) { applyCount(e.payload); });
   }
 
   // --- menu ---
