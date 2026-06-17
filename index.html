@@ -4,6 +4,15 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Project Bar — 赛道进度</title>
+<!-- Overlay mode: when loaded by the Tauri shell the URL carries #overlay.
+     We flip the page background to transparent so the desktop shows through.
+     In a plain browser (no #overlay) the deep-night theme is kept intact,
+     so the UI still runs standalone (architecture invariant #2). -->
+<script>
+  if (location.hash.indexOf("overlay") !== -1) {
+    document.documentElement.classList.add("overlay");
+  }
+</script>
 <style>
   /* ----------------------------------------------------------------
      Project Bar — Stage 1 (local, single player)
@@ -38,6 +47,11 @@
     font-family: "Courier New", ui-monospace, monospace;
     -webkit-font-smoothing: none;
   }
+
+  /* Overlay mode (Tauri shell): desktop shows through. The track stage and
+     control panel keep their own opaque card backgrounds, so they float as
+     a "sticker" while the gaps around them become transparent. */
+  html.overlay, html.overlay body { background: transparent !important; }
 
   body {
     display: flex;
