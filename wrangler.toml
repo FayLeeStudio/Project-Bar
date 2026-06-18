@@ -1,0 +1,17 @@
+# Cloudflare Workers config for the Project Bar room backend.
+# Deploys to a free *.workers.dev subdomain (no custom domain needed).
+#   local:  npm run party:dev     (wrangler dev → http://127.0.0.1:8787)
+#   deploy: npm run party:deploy   (wrangler deploy → project-bar.<subdomain>.workers.dev)
+name = "project-bar"
+main = "party/server.ts"
+compatibility_date = "2026-06-18"
+
+# The room engine: one Durable Object instance per roomId.
+[[durable_objects.bindings]]
+name = "RACEROOM"
+class_name = "RaceRoom"
+
+# SQLite-backed Durable Objects are the flavour available on the FREE plan.
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["RaceRoom"]

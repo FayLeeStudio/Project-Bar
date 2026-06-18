@@ -86,6 +86,17 @@
   .track:active { cursor: grabbing; }
   .car-group { transition: transform .12s linear; }
 
+  /* Remote players (Stage 2): one colored car + name tag per opponent.
+     They reuse .car-group so motion between throttled updates stays smooth. */
+  .car-label {
+    font: 8px "Courier New", ui-monospace, monospace;
+    fill: var(--text);
+    paint-order: stroke;      /* draw a dark halo under the glyphs */
+    stroke: #000;
+    stroke-width: 2px;
+    stroke-linejoin: round;
+  }
+
   /* Compact info bar -------------------------------------------------- */
   .bar {
     width: 100%;
@@ -122,6 +133,7 @@
   .bar-info .pct b { color: var(--accent); font-size: 14px; }
   .bar-info .lap { color: var(--text-dim); text-transform: uppercase; }
   .bar-info .lap b { color: var(--text); }
+  .bar-info .room { color: var(--text-dim); }
 
   .menu-btn {
     flex: 0 0 auto;
@@ -239,6 +251,10 @@
       <!-- start / finish marker (drawn at path start, set by JS) -->
       <g id="finishMark"></g>
 
+      <!-- remote players' cars (Stage 2): JS creates one <g> per opponent
+           here, below the local car so "you" always stay on top. -->
+      <g id="remoteCars"></g>
+
       <!-- the car: a dot with an outline. JS moves this group. -->
       <g id="car" class="car-group">
         <circle r="7" fill="var(--car)" stroke="#000" stroke-width="3"/>
@@ -254,6 +270,8 @@
         <span class="pct"><b id="pctText">0</b>%</span>
         <span class="sep">·</span>
         <span class="lap">Lap <b id="lapText">0</b></span>
+        <span class="sep" id="roomSep" hidden>·</span>
+        <span class="room" id="roomText"></span>
       </div>
       <button class="menu-btn" id="menuBtn" data-no-drag
               aria-label="菜单" aria-haspopup="true">≡</button>
@@ -262,6 +280,10 @@
     <!-- MENU (hidden until ≡) -------------------------------------------- -->
     <div class="menu" id="menu" data-no-drag hidden>
       <button class="menu-item" id="editBtn">✎ 编辑任务</button>
+      <button class="menu-item" id="nameBtn">🏷 改昵称</button>
+      <button class="menu-item" id="newRoomBtn" hidden>✨ 新建房间</button>
+      <button class="menu-item" id="joinRoomBtn" hidden>🚪 加入房间…</button>
+      <button class="menu-item" id="copyLinkBtn" hidden>🔗 复制房间链接</button>
       <button class="menu-item danger" id="closeBtn">✕ 关闭程序</button>
     </div>
 
@@ -294,6 +316,12 @@
   const editRow    = $("editRow");
   const taskInput  = $("taskInput");
   const saveBtn    = $("saveBtn");
+  const nameBtn    = $("nameBtn");
+  const roomText   = $("roomText");
+  const roomSep    = $("roomSep");
+  const newRoomBtn = $("newRoomBtn");
+  const joinRoomBtn= $("joinRoomBtn");
+  const copyLinkBtn= $("copyLinkBtn");
 
   // Tauri APIs exist only inside the shell (withGlobalTauri + remote
   // capability). Guarded so the page still runs standalone in a browser.
@@ -344,6 +372,219 @@
     taskLabel.textContent = state.task.trim() || "本圈任务";
   }
 
+  // --- Stage 2 · multiplayer room (Cloudflare Workers + Durable Objects) ----
+  // The backend only relays integer `ticks` (CLAUDE.md §4 / Design §8). Your
+  // own car is still driven instantly by the keycount above; opponents' cars
+  // come from the room's broadcast state. Both are placed only via
+  // path.getPointAtLength — multiplayer never touches the car/progress math.
+  const SVGNS = "http://www.w3.org/2000/svg";
+  const PROGRESS_INTERVAL_MS = 100; // 10fps report throttle (the one knob)
+
+  const params = new URLSearchParams(location.search);
+
+  // Room code: short, human-readable, no ambiguous chars. Players share the
+  // code (like a Jackbox / Among-Us room) — there is no directory to browse,
+  // joining = entering the exact code.
+  const CODE_ALPHABET = "ABCDEFGHJKMNPQRSTUVWXYZ23456789"; // dropped I L O 0 1
+  function makeRoomCode() {
+    let s = "";
+    for (let i = 0; i < 4; i++) s += CODE_ALPHABET[Math.floor(Math.random() * CODE_ALPHABET.length)];
+    return s;
+  }
+  function normRoom(s) {
+    return String(s || "").trim().toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 12);
+  }
+
+  // Source of truth = localStorage, so the room survives restarts AND works in
+  // the fixed-URL Tauri shell (the native side never has to inject a roomId).
+  // A `?room=` link still wins on first load, so share links just work.
+  let roomId = normRoom(params.get("room")) ||
+               normRoom(localStorage.getItem("projectbar.room")) ||
+               makeRoomCode();
+  localStorage.setItem("projectbar.room", roomId);
+
+  // Bring our own connection id: the Worker reads ?_pk as the connection id, so
+  // we can recognise (and skip) our own car in the broadcast without server help.
+  const myId = (window.crypto && crypto.randomUUID)
+    ? crypto.randomUUID()
+    : (Date.now().toString(36) + Math.random().toString(36).slice(2));
+
+  let playerName = localStorage.getItem("projectbar.name") || ("玩家-" + myId.slice(0, 4));
+
+  // Backend host. Local `wrangler dev` listens on 127.0.0.1:8787; in production
+  // this is your Cloudflare Workers subdomain (filled in after `wrangler deploy`).
+  // Override at runtime via localStorage 'projectbar.partyhost'.
+  const PROD_HOST = "project-bar.rectrepair.workers.dev"; // Cloudflare Workers backend
+  const isDev = location.protocol === "file:" ||
+                location.hostname === "localhost" ||
+                location.hostname === "127.0.0.1";
+  // ?host= wins (handy for pointing a locally-served page at the cloud backend),
+  // then a localStorage override, then dev/prod defaults.
+  const PARTY_HOST = params.get("host") ||
+                     localStorage.getItem("projectbar.partyhost") ||
+                     (isDev ? "127.0.0.1:8787" : PROD_HOST);
+  const wsProto = /^(localhost|127\.0\.0\.1)/.test(PARTY_HOST) ? "ws" : "wss";
+
+  // Only dial in when multiplayer is actually intended, so a plain single-player
+  // page (no room, no configured backend) stays silent and Stage-1 identical.
+  const multiplayerEnabled =
+    params.has("room") || params.has("host") || isDev ||
+    !!localStorage.getItem("projectbar.partyhost") ||
+    PROD_HOST.indexOf("CF_SUBDOMAIN") === -1;
+
+  const remoteLayer = $("remoteCars");
+  const remoteEls = Object.create(null); // id -> { g, label }
+
+  // stable per-player colour from the connection id
+  function colorFor(id) {
+    let h = 0;
+    for (let i = 0; i < id.length; i++) h = (h * 31 + id.charCodeAt(i)) >>> 0;
+    return "hsl(" + (h % 360) + ", 75%, 62%)";
+  }
+
+  // place any car <g> at ticks (0..100) — the SAME bridge render() uses
+  function placeCar(g, ticks) {
+    const pct = Math.max(0, Math.min(100, Number(ticks) || 0));
+    const pt = path.getPointAtLength((pct / 100) * totalLen);
+    g.setAttribute("transform", "translate(" + pt.x + ", " + pt.y + ")");
+  }
+
+  function renderRemote(players) {
+    const seen = Object.create(null);
+    for (const id in players) {
+      if (id === myId) continue; // our own car is driven locally
+      seen[id] = true;
+      let el = remoteEls[id];
+      if (!el) {
+        const g = document.createElementNS(SVGNS, "g");
+        g.setAttribute("class", "car-group");
+        const dot = document.createElementNS(SVGNS, "circle");
+        dot.setAttribute("r", "6");
+        dot.setAttribute("fill", colorFor(id));
+        dot.setAttribute("stroke", "#000");
+        dot.setAttribute("stroke-width", "3");
+        const label = document.createElementNS(SVGNS, "text");
+        label.setAttribute("class", "car-label");
+        label.setAttribute("y", "-10");
+        label.setAttribute("text-anchor", "middle");
+        g.appendChild(dot);
+        g.appendChild(label);
+        remoteLayer.appendChild(g);
+        el = remoteEls[id] = { g: g, label: label };
+      }
+      el.label.textContent = players[id].name || "";
+      placeCar(el.g, players[id].ticks);
+    }
+    // drop cars for players who left
+    for (const id in remoteEls) {
+      if (!seen[id]) { remoteEls[id].g.remove(); delete remoteEls[id]; }
+    }
+  }
+
+  let ws = null;
+  let pendingTicks = null;     // latest progress waiting to be reported
+  let reconnectTimer = null;
+
+  function sendJoin() {
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify({ type: "join", name: playerName }));
+      pendingTicks = Math.round(state.progress); // sync current progress on entry
+    }
+  }
+
+  function onWsMessage(e) {
+    let data;
+    try { data = JSON.parse(e.data); } catch (_) { return; }
+    if (data && data.type === "state") renderRemote(data.players || {});
+  }
+
+  function scheduleReconnect() {
+    ws = null;
+    if (reconnectTimer) return;
+    reconnectTimer = setTimeout(function () { reconnectTimer = null; connect(); }, 2000);
+  }
+
+  function connect() {
+    if (!multiplayerEnabled) return;
+    if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
+    let socket;
+    try {
+      socket = new WebSocket(
+        wsProto + "://" + PARTY_HOST + "/parties/main/" +
+        encodeURIComponent(roomId) + "?_pk=" + encodeURIComponent(myId)
+      );
+    } catch (_) { return; } // bad host: stay single-player
+    ws = socket;
+    socket.onopen = sendJoin;
+    socket.onmessage = onWsMessage;
+    socket.onclose = scheduleReconnect; // auto-reconnect (incl. partykit dev restarts)
+    socket.onerror = function () {};     // an error is followed by close → reconnect
+  }
+
+  function reconnect() {
+    if (!multiplayerEnabled) return;
+    if (ws) { ws.onclose = null; try { ws.close(); } catch (_) {} ws = null; }
+    if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
+    connect();
+  }
+
+  // Leave the current room and join `code` — no page reload, so it works the
+  // same in a browser and inside the fixed-URL Tauri shell.
+  function switchRoom(code) {
+    const r = normRoom(code);
+    if (!r || r === roomId) return;
+    roomId = r;
+    localStorage.setItem("projectbar.room", roomId);
+    roomText.textContent = "#" + roomId;
+    for (const id in remoteEls) { remoteEls[id].g.remove(); delete remoteEls[id]; }
+    reconnect();
+  }
+  function newRoom() {
+    let c; do { c = makeRoomCode(); } while (c === roomId);
+    switchRoom(c);
+  }
+  function shareLink() {
+    const u = new URL(location.href);
+    u.searchParams.set("room", roomId);
+    return u.toString(); // keeps an existing #overlay hash for the Tauri shell
+  }
+  function copyText(t) {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(t).catch(function () { fallbackCopy(t); });
+    } else { fallbackCopy(t); }
+  }
+  function fallbackCopy(t) {
+    const ta = document.createElement("textarea");
+    ta.value = t; ta.style.position = "fixed"; ta.style.opacity = "0";
+    document.body.appendChild(ta); ta.focus(); ta.select();
+    try { document.execCommand("copy"); } catch (_) {}
+    ta.remove();
+  }
+
+  if (multiplayerEnabled) {
+    setInterval(function () {
+      if (pendingTicks !== null && ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ type: "progress", ticks: pendingTicks }));
+        pendingTicks = null;
+      }
+    }, PROGRESS_INTERVAL_MS);
+    roomText.textContent = "#" + roomId;
+    roomSep.hidden = false;
+
+    // room controls live in the menu (browser + Tauri shell, identical)
+    newRoomBtn.hidden = false;
+    joinRoomBtn.hidden = false;
+    copyLinkBtn.hidden = false;
+    newRoomBtn.addEventListener("click", function () { closeMenu(); newRoom(); });
+    joinRoomBtn.addEventListener("click", function () { openEdit("room"); });
+    copyLinkBtn.addEventListener("click", function () {
+      copyText(shareLink());
+      const old = copyLinkBtn.textContent;
+      copyLinkBtn.textContent = "✓ 已复制";
+      setTimeout(function () { copyLinkBtn.textContent = old; }, 1200);
+    });
+  }
+
   // --- live input count from the Rust shell (Stage B) ---
   // The shell only ever sends a running total; it never records which keys.
   function applyCount(count) {
@@ -351,6 +592,9 @@
     state.laps = Math.floor(count / PER_LAP);
     state.progress = (count % PER_LAP) / PER_LAP * 100;
     render();
+    // report in-lap progress as 0..100, decoupled from the local PER_LAP so the
+    // backend (and other clients) never need to know our lap length.
+    pendingTicks = Math.round(state.progress);
   }
   if (TE) {
     TE.listen("keycount", function (e) { applyCount(e.payload); });
@@ -368,23 +612,50 @@
     }
   });
 
-  // --- edit task ---
-  editBtn.addEventListener("click", function () {
+  // --- edit task / nickname (shared inline editor) ---
+  let editMode = "task"; // 'task' | 'name'
+  function openEdit(mode) {
+    editMode = mode;
     closeMenu();
     editRow.hidden = false;
-    taskInput.value = state.task;
+    if (mode === "name") {
+      taskInput.value = playerName;
+      taskInput.placeholder = "你的昵称…";
+      taskInput.maxLength = 16;
+    } else if (mode === "room") {
+      taskInput.value = roomId;
+      taskInput.placeholder = "输入房间号加入…";
+      taskInput.maxLength = 12;
+    } else {
+      taskInput.value = state.task;
+      taskInput.placeholder = "在比什么…";
+      taskInput.maxLength = 40;
+    }
     taskInput.focus();
     taskInput.select();
-  });
-  function saveTask() {
-    state.task = taskInput.value.trim();
-    localStorage.setItem(STORE_KEY, state.task);
+  }
+  function saveEdit() {
+    const v = taskInput.value.trim();
+    if (editMode === "name") {
+      if (v) {
+        playerName = v;
+        localStorage.setItem("projectbar.name", playerName);
+        reconnect(); // rejoin under the new nickname
+      }
+    } else if (editMode === "room") {
+      switchRoom(v); // join the room the player typed
+    } else {
+      state.task = v;
+      localStorage.setItem(STORE_KEY, state.task);
+    }
     editRow.hidden = true;
     render();
   }
-  saveBtn.addEventListener("click", saveTask);
+  editBtn.addEventListener("click", function () { openEdit("task"); });
+  nameBtn.addEventListener("click", function () { openEdit("name"); });
+  saveBtn.addEventListener("click", saveEdit);
   taskInput.addEventListener("keydown", function (e) {
-    if (e.key === "Enter") saveTask();
+    if (e.key === "Enter") saveEdit();
     else if (e.key === "Escape") editRow.hidden = true;
   });
 
@@ -404,9 +675,30 @@
     if (appWindow) appWindow.startDragging();
   });
 
+  // --- dev-only input simulator (browser testing) -------------------------
+  // The real progress source is the Rust shell's keycount (global, via rdev).
+  // A plain browser has none, so `?sim` lets you drive YOUR OWN car with the
+  // page's own focused keyboard/clicks — purely a test stub for two-tab racing,
+  // never the production input path, and off whenever the Tauri shell is present.
+  if (params.has("sim") && !TE) {
+    let simCount = state.count;
+    const bump = function () { applyCount(++simCount); };
+    const MODS = { Tab: 1, Shift: 1, Control: 1, Alt: 1, Meta: 1, CapsLock: 1 };
+    document.addEventListener("keydown", function (e) {
+      if (e.target.closest("input, textarea, button")) return; // ignore while typing
+      if (MODS[e.key]) return;
+      bump();
+    });
+    app.addEventListener("click", function (e) {
+      if (e.target.closest("[data-no-drag]")) return;          // let buttons work
+      bump();
+    });
+  }
+
   // --- init ---
   drawFinish();
   render();
+  connect();
 })();
 </script>
 </body>

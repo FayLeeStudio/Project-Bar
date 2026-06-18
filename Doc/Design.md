@@ -2,7 +2,8 @@
 
 > 这是**会演化**的完整方案:架构、数据流、技术选型理由、分阶段计划、关键代码参考。
 > 跨会话必须守住的硬规则在 `CLAUDE.md`,本文件只补充细节与计划。
-> 状态:**Stage 1(单机)已完成** · **Stage 2(多人 / PartyKit)进行中** · 主力平台 Windows。
+> 状态:**Stage 1(单机)已完成** · **Stage 2(多人 / Cloudflare Workers + Durable Objects)进行中** · 主力平台 Windows。
+> 后端历史:原定 PartyKit,因其共享域名 `partykit.dev` 撞 Cloudflare 子域名上限、免费托管无法新部署,改用其底层 CF Workers + DO 直连(详见 §5 / §8)。
 
 ---
 
@@ -21,21 +22,21 @@
 │  Layer 1 · Web UI (赛道)                                      │
 │  纯 HTML/CSS/JS,GitHub Pages 托管,浏览器可独立运行           │
 │  SVG <path> + getPointAtLength → 摆放赛车 + 排行榜            │
-│  接收 keycount(本机) / 房间状态(PartyKit) → 渲染              │
+│  接收 keycount(本机) / 房间状态(后端) → 渲染                │
 └───────────────▲───────────────────────────▲─────────────────┘
                 │ Tauri 事件 'keycount'      │ WebSocket(wss) 房间状态
-┌───────────────┴─────────────────┐  ┌──────┴─────────────────┐
-│  Layer 2 · Tauri 外壳 (Rust)     │  │  Layer 3 · 后端 PartyKit │
-│  透明/无边框/置顶 原生窗口        │  │  每房间一个边缘实例       │
+┌───────────────┴─────────────────┐  ┌──────┴──────────────────┐
+│  Layer 2 · Tauri 外壳 (Rust)     │  │  Layer 3 · 后端 CF Workers│
+│  透明/无边框/置顶 原生窗口        │  │  每房间一个 Durable Object│
 │  加载 Pages URL                  │  │  收某玩家 ticks → 广播    │
 │  全局输入统计 (rdev)             │  │  全房间 state            │
-│  写本地文件持久化                 │  │  (云;本地 partykit dev)  │
-└──────────────────────────────────┘  └─────────────────────────┘
+│  写本地文件持久化                 │  │  (云;本地 wrangler dev)   │
+└──────────────────────────────────┘  └──────────────────────────┘
 ```
 
 - **Layer 1** 在任意设备(含 iPad)上通过 Pages 迭代,跨平台免费。
 - **Layer 2** 在本地按系统构建,只负责"原生能力 + 装载 UI"。
-- **Layer 3** = PartyKit:每个 `roomId` 对应一个边缘实例,只转发整数,不感知赛道。
+- **Layer 3** = Cloudflare Workers + Durable Objects:每个 `roomId` 对应一个 DO 实例,只转发整数,不感知赛道。
 
 ## 3. 数据模型与流转
 
@@ -50,15 +51,15 @@
             → 每 25 次写入本地文件(app_data_dir/keycount.txt),重启恢复
 ```
 
-**多人房间(Stage 2,PartyKit):**
+**多人房间(Stage 2,Cloudflare Workers + DO):**
 
 ```
 本机 count → 前端节流(10fps)→ ws.send({type:'progress', ticks})
-          → PartyKit 房间合并 → 广播 {type:'state', players:{id:{name,ticks}}}
+          → 房间 DO 合并 → 广播 {type:'state', players:{id:{name,ticks}}}
           → 各端对每个玩家:pt = getPointAtLength((ticks/100) * L) → 摆位
 ```
 
-每个客户端只上报**自己的** ticks;PartyKit 合并后广播完整 `players`;各端复用单机的 path 映射逻辑渲染所有赛车。详见 §8 后端规范。
+每个客户端只上报**自己的** ticks;房间 DO 合并后广播完整 `players`;各端复用单机的 path 映射逻辑渲染所有赛车。详见 §8 后端规范。
 
 ## 4. 指标(metric)
 
@@ -70,11 +71,11 @@
 
 - **为什么 Web/Tauri 而非 Unity/Godot**:产品主体是 UI(赛道 + 面板),Web 做 UI 最快;透明叠加 + 全局输入在任何路线都要按系统接原生,Web/Tauri 的原生适配面最小、最轻。引擎留给"游戏化内容显著变重"的产品化阶段再议。
 - **为什么 `rdev`**:跨平台全局输入监听,能逐次捕获 KeyPress/ButtonPress 用于计数。
-- **为什么 PartyKit(直接上云,跳过局域网主机原型)**:
-  - "每房间一个边缘实例"与本产品的"房间"模型 1:1 对应,服务端只有几十行。
-  - **本地开发无摩擦**:`npx partykit dev` 起 localhost 实例,两个浏览器标签即可联调,不需要账号/部署;验证完再 `partykit deploy` 上云。
+- **为什么 Cloudflare Workers + Durable Objects(直接上云,跳过局域网主机原型)**:
+  - "每房间一个 Durable Object 实例"与本产品的"房间"模型 1:1 对应,服务端只有几十行。
+  - **本地开发无摩擦**:`npx wrangler dev` 起 localhost 实例(workerd/miniflare),两个浏览器标签即可联调;验证完 `wrangler deploy` 上 `*.workers.dev`,免费、免自有域名。
   - 省掉了局域网主机方案的痛点(找主机 IP、同一 WiFi、放行端口、主机下线房间就没了)。
-  - 底层是 Cloudflare Durable Objects,可平滑迁到自有 Cloudflare 账户。
+  - **为什么不是 PartyKit**(原计划):PartyKit 是 CF DO 的便利包装,但其共享托管域名 `partykit.dev` 撞到 Cloudflare「单域名最多 10000 个自定义子域名」上限,2026-06 起免费新部署全部失败;直接用其底层 CF DO 即绕开此限制,技术栈等价。
 
 ## 6. 跨平台计划
 
@@ -84,7 +85,7 @@
 | 透明置顶 | `transparent:true` 即可 | 需 `macOSPrivateApi:true`(+ 上架限制) |
 | 全局统计 | 免授权直接跑 | 需"输入监控"授权;rdev 可能需独立进程 |
 | 打包 | 本机构建 .exe/.msi | **必须在 Mac 上**构建 .app/.dmg(Tauri 不跨编译) |
-| 后端 | PartyKit 云,与系统无关 | 同左 |
+| 后端 | Cloudflare Workers + DO 云,与系统无关 | 同左 |
 
 一套源码,按系统各构建一次;UI 与后端两端共用。
 
@@ -103,9 +104,14 @@
 - `device_event_filter(Never)` 缓解 rdev 焦点夺键(Tauri #14770)。
 - 前端 `PER_LAP = 100`(localStorage `projectbar.perlap` 可调,设置 UI 待做)。
 
-### 阶段 C · 多人房间(PartyKit)← 当前重点
-- 写 `party/server.ts` + `partykit.json`;前端加 WS 客户端(join / 节流上报 / 渲染全房间赛车)。
-- **先用 `npx partykit dev` + 两个浏览器标签联调**(纯 Web,不碰 Tauri),再 `partykit deploy` 上云、用 `?room=` 分享。
+### 阶段 C · 多人房间(Cloudflare Workers + DO)← 当前重点
+- ✅ `party/server.ts`(Worker + DO)+ `wrangler.toml` 已写;前端 WS 客户端已接(join / 100ms 节流上报 / 渲染全房间赛车)。
+- ✅ 后端协议已用 `party/smoke-test.mjs` 对 `wrangler dev` 端到端验证(join→progress→广播→离场),并验证房间隔离(不同房间号 = 独立 DO,互不可见)。
+- ✅ 房间 UX:4 位易读房间码,菜单「新建/加入/复制链接」,localStorage 持久化,切房间不刷新直接重连;Tauri 外壳无需注入 roomId(§10 已定)。
+- ⏳ **待办**:① `npx wrangler login` + `npm run party:deploy` 上云,把前端 `PROD_HOST` 的 `CF_SUBDOMAIN` 占位换成真实 workers.dev 子域名;
+  ② 两个浏览器标签开同一 `?room=XXXX&sim` 目视确认赛车互相可见(纯 Web,不碰 Tauri);
+  ③ 推 index.html 到 Pages,真·异地联机。
+- **本地联调**:`npm run party:dev` 起 127.0.0.1:8787(wrangler dev);前端在 `file://` / `localhost` / `127.0.0.1` 下自动连本地(`projectbar.partyhost` 可覆盖)。
 - **DoD**:多端在同一房间看到彼此的赛车按各自输入数前进。
 - 完整规范见 §8。
 
@@ -114,15 +120,16 @@
 
 ---
 
-## 8. 后端规范(PartyKit · Stage 2)
+## 8. 后端规范(Cloudflare Workers + Durable Objects · Stage 2)
 
 ### 架构
 
 ```
-[GitHub Pages UI]  ←→  WebSocket(wss)  ←→  [PartyKit Room]
-                                            /parties/main/{roomId}
+[GitHub Pages UI]  ←→  WebSocket(wss)  ←→  [Worker] → [Durable Object: 一个房间]
+                                            /parties/main/{roomId}?_pk={connId}
 ```
 
+Worker 按 `roomId` 把连接路由到对应的 Durable Object(`idFromName(roomId)`)。
 后端只有一个职责:**收到某个玩家的 ticks,广播给同房间所有人**。
 不感知赛道形状,不感知一圈是多少 ticks,只传递整数。
 
@@ -176,96 +183,114 @@ setInterval(() => {
 
 ### 服务端代码(`party/server.ts`)
 
+一个 Worker(按 `roomId` 路由到 DO)+ 一个 Durable Object `RaceRoom`(内存持有 `players`,每次变更重广播)。逻辑与原 PartyKit 版等价 —— "收 ticks → 广播 players",不感知赛道/圈长。完整代码见仓库 `party/server.ts`,要点:
+
 ```ts
-import type * as Party from "partykit/server";
-
-type PlayerState = { name: string; ticks: number };
-type RoomState   = Record<string, PlayerState>;
-
-export default class RaceRoom implements Party.Server {
-  players: RoomState = {};
-
-  constructor(readonly room: Party.Room) {}
-
-  onConnect(conn: Party.Connection) {
-    conn.send(JSON.stringify({ type: "state", players: this.players }));
-  }
-
-  onMessage(msg: string, sender: Party.Connection) {
-    const data = JSON.parse(msg);
-    if (data.type === "join") {
-      this.players[sender.id] = { name: data.name, ticks: 0 };
+export default {
+  async fetch(request, env) {
+    const url = new URL(request.url);
+    const m = url.pathname.match(/^\/parties\/main\/([^/]+)/);
+    if (request.headers.get("Upgrade") === "websocket" && m) {
+      const stub = env.RACEROOM.get(env.RACEROOM.idFromName(decodeURIComponent(m[1])));
+      return stub.fetch(request);                 // 路由到该房间的 DO
     }
-    if (data.type === "progress" && this.players[sender.id]) {
-      this.players[sender.id].ticks = data.ticks;
-    }
-    this.room.broadcast(
-      JSON.stringify({ type: "state", players: this.players })
-    );
-  }
+    return new Response("Project Bar room server");
+  },
+};
 
-  onClose(conn: Party.Connection) {
-    delete this.players[conn.id];
-    this.room.broadcast(
-      JSON.stringify({ type: "state", players: this.players })
-    );
+export class RaceRoom {                            // 一个 roomId = 一个实例
+  players = {};                                    // connId -> { name, ticks }
+  conns = new Map();                               // WebSocket -> connId
+
+  async fetch(request) {
+    const connId = new URL(request.url).searchParams.get("_pk") || crypto.randomUUID();
+    const { 0: client, 1: server } = new WebSocketPair();
+    server.accept();
+    this.conns.set(server, connId);
+    server.send(JSON.stringify({ type: "state", players: this.players }));   // 入场快照
+    server.addEventListener("message", (e) => this.onMessage(connId, e.data));
+    const drop = () => this.onClose(server, connId);
+    server.addEventListener("close", drop);
+    server.addEventListener("error", drop);
+    return new Response(null, { status: 101, webSocket: client });
   }
+  // onMessage: join → 建档;progress → 更新整数 ticks;坏/未知消息忽略;然后 broadcast()
+  // onClose:   从 conns/players 移除并 broadcast()
+  // broadcast: 向 conns 里所有 socket 发 { type:"state", players }
 }
 ```
 
-### 配置文件(`partykit.json`)
+> **回归测试**:`node party/smoke-test.mjs`(需先 `npm run party:dev` = `wrangler dev`)模拟两名玩家,断言 join/progress/广播/离场都正确,并验证 `?_pk` 把连接 ID 设成我们指定的值;另测了不同房间号映射到独立 DO(互不可见)。
 
-```json
-{
-  "name": "project-bar",
-  "main": "party/server.ts"
-}
+### 配置文件(`wrangler.toml`)
+
+```toml
+name = "project-bar"
+main = "party/server.ts"
+compatibility_date = "2026-06-18"
+
+[[durable_objects.bindings]]
+name = "RACEROOM"
+class_name = "RaceRoom"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["RaceRoom"]   # SQLite 版 DO = 免费套餐可用
 ```
 
-### 前端接入要点
+### 前端接入要点(已实现于 `index.html`)
+
+关键设计决定:
+
+- **自带连接 ID**:用 `?_pk=<随机 id>` 连接,Worker 把它读成该连接的 id,于是前端**知道自己的 id**,在渲染广播时跳过自己的车 —— 服务端无需为此改动。
+- **本地车零延迟**:自己的车仍由 Stage B 的 `keycount` 即时驱动(`#car`);只有**别人的**车从广播 `state` 渲染(`#remoteCars` 里每人一个 `<g>`,带颜色+昵称)。
+- **ticks 与 PER_LAP 解耦**:上报 `Math.round(progress)`(圈内进度 0–100),后端/他端都不需要知道本地一圈多少次输入。渲染照旧只用 `getPointAtLength`。
+- **优雅退回单机**:只有"打算联机"(有 `?room=` / 本地 dev / 配了 host / 填了真实用户名)才连;连不上时静默,不破坏 Stage 1。
+- **主机解析**:`file://` / `localhost` / `127.0.0.1` → `ws://127.0.0.1:8787`(`wrangler dev`);否则 `wss://<PROD_HOST>`。`PROD_HOST` 里的 `CF_SUBDOMAIN` 需换成 `wrangler deploy` 后拿到的 workers.dev 子域名;`localStorage['projectbar.partyhost']` 可运行时覆盖。
+- **昵称**:`localStorage['projectbar.name']`,默认 `玩家-<id前4>`,菜单"🏷 改昵称"可改(改后自动重连重新 join)。
+- **房间创建/加入**:房间号 4 位易读码,存 `localStorage['projectbar.room']`;菜单「新建房间 / 加入房间(输码)/ 复制链接」,切房间不刷新页面直接重连。`switchRoom()` 会清掉旧房间残留的远端车再重连。
+- **`?sim` 调试驱动(仅浏览器测试)**:浏览器里没有 Rust `keycount`,加 `?sim` 后页面自身焦点内的按键/点击给本地计数 +1,驱动自己的车 —— 纯测试桩,不进生产输入路径,有 Tauri 外壳时自动禁用。两个标签开 `?room=TEST&sim` 即可看车互相竞速。
 
 ```js
-// 从 URL 读取房间 ID（方便分享链接）
 const roomId = new URLSearchParams(location.search).get("room")
-            ?? Math.random().toString(36).slice(2, 8);
-
+            || Math.random().toString(36).slice(2, 8);
+const myId = crypto.randomUUID();
 const ws = new WebSocket(
-  `wss://project-bar.{PARTYKIT_USER}.partykit.dev/parties/main/${roomId}`
+  `${wsProto}://${PARTY_HOST}/parties/main/${roomId}?_pk=${myId}`
 );
-
-ws.onopen  = () => ws.send(JSON.stringify({ type: "join", name: playerName }));
-
+ws.onopen = () => ws.send(JSON.stringify({ type: "join", name: playerName }));
 ws.onmessage = ({ data }) => {
   const { type, players } = JSON.parse(data);
-  if (type === "state") {
-    for (const [id, { ticks }] of Object.entries(players)) {
-      const pt = path.getPointAtLength((ticks / 100) * path.getTotalLength());
-      // 用 pt.x / pt.y 定位对应玩家的赛车元素
-    }
+  if (type !== "state") return;
+  for (const id in players) {
+    if (id === myId) continue;                 // 自己的车本地即时驱动
+    const { ticks } = players[id];
+    const pt = path.getPointAtLength((ticks / 100) * path.getTotalLength());
+    // 用 pt.x / pt.y 定位 / 创建该玩家的赛车元素
   }
 };
 ```
 
 ### 部署
 
+> **关于后端地址**:`wrangler deploy` 把后端部署到 `project-bar.<你的 workers.dev 子域名>.workers.dev`。该子域名是**开发者账号**首次部署时一次性选定/分配,在 `index.html` 的 `PROD_HOST` 里写死一次即可,**玩家永不接触**(玩家之间只用房间号区分)。本地 `wrangler dev` 阶段完全不需要账号。
+
 ```bash
-# 本地联调（推荐先做，无需账号）：起 localhost，两个浏览器标签连同一 room
-npx partykit dev
+# 本地联调（推荐先做，无需账号）：起 localhost(workerd/miniflare)
+npm run party:dev    # = npx wrangler dev，监听 127.0.0.1:8787
+# 浏览器开两个标签：…/index.html?room=TEST&sim（?sim 用来在浏览器里驱动赛车）
 
-# 方式 A：PartyKit 托管（上云起步）
-npx partykit login
-npx partykit deploy
-
-# 方式 B：部署到自己的 Cloudflare 账户
-CLOUDFLARE_ACCOUNT_ID=<id> CLOUDFLARE_API_TOKEN=<token> \
-npx partykit deploy --domain partykit.yourdomain.com
+# 上云（让不同机器/真人联机）：免费注册 Cloudflare + 部署
+npx wrangler login   # 浏览器授权 CLI(已登录网页后台时一键确认)
+npm run party:deploy # = npx wrangler deploy → 打印 project-bar.<子域名>.workers.dev
+# 然后把该地址填进 index.html 的 PROD_HOST（替换占位符 CF_SUBDOMAIN）
 ```
 
 ### 房间分享
 
 ```
-https://indiegames.design/Project-Bar/?room=abc123
-# Tauri 叠加层窗口需保留 #overlay：?room=abc123#overlay
+https://indiegames.design/Project-Bar/?room=ABCD
+# Tauri 叠加层窗口需保留 #overlay：?room=ABCD#overlay
 # （fayleestudio.github.io/Project-Bar/ 会 301 跳到自定义域名，等价）
 ```
 
@@ -274,16 +299,23 @@ https://indiegames.design/Project-Bar/?room=abc123
 ## 9. 已知问题与风险
 
 - **rdev 焦点夺键(Tauri #14770,2026 仍在)**:rdev 在 Tauri 进程内时,Tauri 窗口自身获得焦点会收不到键盘事件(鼠标正常)。缓解:`device_event_filter(Never)`;桌宠通常不抢焦点故影响小;终极方案是把监听拆成独立小进程。
-- **PartyKit 远程访问**:Pages(https)连 PartyKit 必须用 `wss://`;Tauri 远程页面发起 WS 连接通常无需额外 capability(WebSocket 是标准 Web API),但需确认 CSP 不拦截。
+- **后端远程访问**:Pages(https)连 Cloudflare Workers 必须用 `wss://`;Tauri 远程页面发起 WS 连接通常无需额外 capability(WebSocket 是标准 Web API),但需确认 CSP 不拦截。
+- **Durable Objects 免费套餐**:DO 须用 SQLite 版(`new_sqlite_classes`)才在 Workers Free 计划可用;若账号无法部署 DO,部署会报错,需检查计划。
 - **macOS**:透明需私有 API(上架受限);全局输入需"输入监控"授权;rdev 可能须主线程/独立进程。
 - **杀软告警**:低级输入钩子像键盘记录器,Windows Defender/SmartScreen 可能提示,自机放行即可。
 - **Tauri v2 权限系统**:前端默认不能直接调原生 API,需在 capabilities 里显式授权(已配 `remote.json`);新手常见"为什么不工作"。
 
 ## 10. 待决问题
 
-- **跨圈排名**:`ticks` 只表圈内进度(0–100);要比较"谁跑得最远"需带 `laps` 或上报累计总数。先定哪种?
-- **外壳选房间**:叠加层窗口加载固定 URL,如何注入/切换 `roomId`(菜单输入?启动参数?默认私有房?)。
-- **玩家名 / 身份**:`join` 的 `name` 从哪来(菜单设置?随机昵称?)。
+**Stage 2 已定(本次实现):**
+
+- ~~**玩家名 / 身份**~~ → `localStorage['projectbar.name']`,默认随机昵称 `玩家-<id前4>`,菜单可改;连接身份用前端生成的 `?_pk` id。
+- ~~**房间来源 / 创建 / 加入**~~ → 房间号 = 4 位易读码(去掉 I L O 0 1)。解析优先级 `?room=` 链接 → `localStorage['projectbar.room']` → 随机新建,存回 localStorage。菜单有「✨ 新建房间 / 🚪 加入房间…(输码)/ 🔗 复制房间链接」,信息栏显示 `#XXXX`。加入靠**输确切房间号**(无目录可浏览,像 Jackbox/Among-Us 房号)。
+- ~~**外壳选房间**~~ → **不需原生注入**:房间号在网页层用 localStorage 管理、菜单切换,外壳只加载固定 URL,浏览器/外壳一致(契约:UI 逻辑在网页)。切房间不刷新、直接重连。
+
+**仍待决:**
+
+- **跨圈排名**:`ticks` 只表圈内进度(0–100),目前他端车只显示圈内位置、不比较圈数。要做排行榜/"谁跑得最远"需另带 `laps` 或上报累计总数 —— 先定哪种再动后端协议。
 - 最终指标:是否只用输入数,还是支持多指标切换。
 - 防作弊:何时从客户端自报转为服务端权威。
 - macOS 全局监听:进程内 vs 独立进程的最终选型。

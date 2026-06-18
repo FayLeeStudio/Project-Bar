@@ -26,10 +26,11 @@
    - webview 只通过 Tauri 事件 `keycount` **接收**计数,再映射到赛道位置。
    - 隐私:**只对输入计数**,绝不记录是哪个键/哪次点击、绝不记录任何内容。
 
-4. **后端 = PartyKit(Stage 2)。**
+4. **后端 = Cloudflare Workers + Durable Objects(Stage 2)。**
    后端只做一件事:把某玩家的整数进度(`ticks`)广播给同房间所有人;
    **不感知赛道形状、不感知一圈多少 ticks**。多人模式**不改** UI 的 `getPointAtLength` 逻辑。
-   完整协议 / 服务端代码 / 部署见 `Doc/Design.md` 的「后端规范」。
+   每个 `roomId` = 一个 Durable Object 实例。完整协议 / 服务端代码 / 部署见 `Doc/Design.md` 的「后端规范」。
+   > 原定 PartyKit;因其共享域名 `partykit.dev` 撞到 Cloudflare「单域名 10000 子域名」上限、免费托管无法新部署(2026-06),改用其底层 Cloudflare Workers + DO 直连(同一套技术,免费、免自有域名)。
 
 ---
 
@@ -44,7 +45,7 @@
 
 ## 技术栈
 
-纯 HTML/CSS/vanilla JS · SVG 渲染 · Tauri v2(Rust)外壳 · `rdev` 全局输入 · GitHub Pages 托管 · PartyKit 后端(Stage 2)。
+纯 HTML/CSS/vanilla JS · SVG 渲染 · Tauri v2(Rust)外壳 · `rdev` 全局输入 · GitHub Pages 托管 · Cloudflare Workers + Durable Objects 后端(Stage 2)。
 
 > 改动技术栈需在 `Doc/Design.md` 说明理由。
 
@@ -67,10 +68,10 @@ index.html          # 赛道 UI（纯 Web，Pages 托管）—— 现有
 README.md
 CLAUDE.md           # 本契约（必读）
 Doc/Design.md       # 完整方案 / 阶段计划 / 后端规范 / 代码参考
-package.json        # 仅 Tauri CLI 工具（Web UI 仍无构建步骤）
+package.json        # Tauri CLI + wrangler 工具（Web UI 仍无构建步骤）
 src-tauri/          # Tauri 外壳（本地构建）—— 现有
-party/server.ts     # PartyKit 服务端（Stage 2，规划中）
-partykit.json       # PartyKit 配置（规划中）
+party/server.ts     # Cloudflare Worker + Durable Object 房间后端（Stage 2）
+wrangler.toml       # Cloudflare Workers 部署配置（Stage 2）
 ```
 
 ---
@@ -80,4 +81,4 @@ partykit.json       # PartyKit 配置（规划中）
 - **Stage 1 · 单机(已完成)** = 阶段 A+B：无边框/半透明/置顶的悬浮窗口装载 Pages 赛道;
   本机真实键盘+鼠标输入驱动赛车沿赛道前进;计数持久化到本地文件。
 
-- **Stage 2 · 多人(进行中)** = 阶段 C：同一房间多人实时竞速,PartyKit 后端,URL 分享房间码。
+- **Stage 2 · 多人(进行中)** = 阶段 C：同一房间多人实时竞速,Cloudflare Workers + Durable Objects 后端,URL 分享房间码。

@@ -6,9 +6,12 @@
   "scripts": {
     "tauri": "tauri",
     "dev": "tauri dev",
-    "build": "tauri build"
+    "build": "tauri build",
+    "party:dev": "wrangler dev",
+    "party:deploy": "wrangler deploy"
   },
   "devDependencies": {
-    "@tauri-apps/cli": "^2"
+    "@tauri-apps/cli": "^2",
+    "wrangler": "^4.101.0"
   }
 }
