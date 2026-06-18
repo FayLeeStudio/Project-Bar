@@ -301,6 +301,7 @@ https://indiegames.design/Project-Bar/?room=ABCD
 - **rdev 焦点夺键(Tauri #14770,2026 仍在)**:rdev 在 Tauri 进程内时,Tauri 窗口自身获得焦点会收不到键盘事件(鼠标正常)。缓解:`device_event_filter(Never)`;桌宠通常不抢焦点故影响小;终极方案是把监听拆成独立小进程。
 - **后端远程访问**:Pages(https)连 Cloudflare Workers 必须用 `wss://`;Tauri 远程页面发起 WS 连接通常无需额外 capability(WebSocket 是标准 Web API),但需确认 CSP 不拦截。
 - **Durable Objects 免费套餐**:DO 须用 SQLite 版(`new_sqlite_classes`)才在 Workers Free 计划可用;若账号无法部署 DO,部署会报错,需检查计划。
+- **中国大陆可达性(已实测,2026-06)**:`*.workers.dev`(及 Cloudflare 多数边缘)在大陆常被墙/限速,**不挂 VPN 同步不了**;挂 VPN 后异地联机正常。原型阶段可接受 VPN;若要面向大陆免 VPN 分发,Cloudflare 自有域名只是便宜一搏(免费 anycast 常同样被墙),可靠路线是改用**海外 VPS(香港/日本/新加坡)跑同一套 ~40 行 ws 房间服务 + 非 Cloudflare 域名**。把"大陆免 VPN 可达"当成显式验收项,别假设能通。
 - **macOS**:透明需私有 API(上架受限);全局输入需"输入监控"授权;rdev 可能须主线程/独立进程。
 - **杀软告警**:低级输入钩子像键盘记录器,Windows Defender/SmartScreen 可能提示,自机放行即可。
 - **Tauri v2 权限系统**:前端默认不能直接调原生 API,需在 capabilities 里显式授权(已配 `remote.json`);新手常见"为什么不工作"。
