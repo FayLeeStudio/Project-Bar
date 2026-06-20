@@ -370,8 +370,8 @@
   let drag = null;
   let frame = 0;
   let palU32 = [];
-  let palShade = [];                 // palShade[slot] = [highlight, base, shadow] U32 tones
-  const SHADE_F = [1.25, 1.0, 0.72]; // 3 tones, Bayer-dithered between (Aseprite-style)
+  let palShade = [];                 // palShade[slot] = [bright, base] U32 tones (2 only)
+  const SHADE_F = [1.25, 1.0];       // 2 tones; depth shown purely by Bayer dither density
   const BAYER4 = [0, 8, 2, 10, 12, 4, 14, 6, 3, 11, 1, 9, 15, 7, 13, 5]; // 4x4 ordered dither
   const colRun = new Int16Array(W);  // depth-from-top run length per column (shading)
   let srcRow = activeH - viewRows;   // world row of the live pour source (bulbs + spawn share it)
@@ -614,19 +614,13 @@
         const c = src[base + x];
         if (!c) { colRun[x] = 0; continue; }                 // air resets the column run
         if (c >= ARTIFACT_BASE) { vbuf[o + x] = palU32[c]; colRun[x] = 0; continue; } // artifacts unshaded
-        // Aseprite-style shading: 3 roughly-even bands (bright / base / shadow)
-        // with WIDE Bayer 4x4 dither zones between them, by depth from the top.
+        // 2-tone shading: ONLY bright + base. The top→deep gradient is done
+        // purely by Bayer 4x4 dither DENSITY (more base pixels with depth) — no
+        // third (dark) colour. sv = fraction of base pixels at this depth.
         const d = ++colRun[x];
-        let sv;
-        if (d <= 6) sv = 0;                       // bright band (wide, ~6 rows)
-        else if (d <= 12) sv = (d - 6) / 6;       // dither bright↔base (wide)
-        else if (d <= 18) sv = 1;                 // base band
-        else if (d <= 24) sv = 1 + (d - 18) / 6;  // dither base↔shadow (wide)
-        else sv = 2;                              // shadow band
-        const lo = sv | 0;
+        let sv = (d - 1) / 24; if (sv > 1) sv = 1;   // 0 = all bright (top) .. 1 = all base (deep)
         const th = BAYER4[by | (x & 3)] * 0.0625;
-        const sh = palShade[c];
-        vbuf[o + x] = sh[(lo < 2 && (sv - lo) > th) ? lo + 1 : lo];
+        vbuf[o + x] = palShade[c][sv > th ? 1 : 0];
       }
     }
     vctx.putImageData(vimg, 0, 0);
@@ -654,12 +648,12 @@
     ctx.font = "8px 'Silkscreen', 'JetBrains Mono', monospace"; // pixel font
     ctx.textAlign = "center";
     ctx.fillText(u.name, cx, cy - R - 7);
-    const tones = [shadeCss(u.css, 1.25), u.css, shadeCss(u.css, 0.72)];
+    const tones = [shadeCss(u.css, 1.25), u.css]; // 2 tones, Bayer-dithered (no dark)
     const glass = hexToRgba(u.css, 0.07);
     const outline = hexToRgba(u.css, 0.5);
     const rimRel = -R * 0.30, dipd = R * 0.64;        // funnel offsets, relative to cy
     for (let gy = cy - R - step; gy <= cy + R + step; gy += step) {
-      const by = ((gy >> 2) & 3) << 2;
+      const by = (((gy / step) | 0) & 3) << 2;
       const cyc = gy + step / 2 - cy;                 // cell centre, relative to cy
       for (let gx = cx - R - step; gx <= cx + R + step; gx += step) {
         const cxc = gx + step / 2 - cx;
@@ -668,11 +662,10 @@
           const n = Math.min(1, Math.abs(cxc) / R);
           const surf = rimRel + dipd * (1 - n);        // funnel surface (centre lower)
           if (cyc >= surf) {
-            const dep = (cyc - surf) / step;             // base-dominant, like the dunes
-            let sv = dep <= 2 ? dep * 0.5 : 1 + Math.max(0, dep - 8) * 0.3; if (sv > 2) sv = 2;
-            const lo = sv | 0;
-            const th = BAYER4[by | ((gx >> 2) & 3)] * 0.0625;
-            ctx.fillStyle = tones[(lo < 2 && (sv - lo) > th) ? lo + 1 : lo];
+            const dep = (cyc - surf) / step;             // 2-tone density dither, like the dunes
+            let sv = dep / 6; if (sv > 1) sv = 1;        // bright at the surface → base deeper
+            const th = BAYER4[by | (((gx / step) | 0) & 3)] * 0.0625;
+            ctx.fillStyle = tones[sv > th ? 1 : 0];
           } else {
             ctx.fillStyle = glass;                     // empty upper glass
           }
