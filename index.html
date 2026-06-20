@@ -18,7 +18,7 @@
 
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Silkscreen:wght@400;700&display=swap" rel="stylesheet">
 
 <style>
   /* ----------------------------------------------------------------
@@ -77,11 +77,11 @@
   .pet { position: relative; display: flex; flex-direction: column; gap: 8px; }
 
   /* ---- the bottle ----------------------------------------------------- */
-  .bottle-wrap { position: relative; width: 360px; height: 560px; }
+  .bottle-wrap { position: relative; width: 240px; height: 600px; }
 
   canvas#bottle {
     display: block;
-    width: 360px; height: 560px;
+    width: 240px; height: 600px;
     background: transparent;                 /* the tint is painted inside the canvas */
     border: none;                            /* no frame — reads as "just sand", more pet-like */
     border-radius: 8px;
@@ -173,7 +173,7 @@
   .menu {
     position: absolute;
     right: 0; bottom: 46px;
-    width: 244px;
+    width: 240px;
     background: var(--chrome-bg);
     border: 1px solid var(--chrome-border);
     border-radius: 8px;
@@ -256,7 +256,7 @@
 
       <!-- BODY · the bottle (drag to dig) ----------------------------- -->
       <div class="bottle-wrap">
-        <canvas id="bottle" width="360" height="560" data-no-drag aria-label="瓶子"></canvas>
+        <canvas id="bottle" width="240" height="600" data-no-drag aria-label="瓶子"></canvas>
         <div class="scrollbar"><div class="thumb" id="thumb"></div></div>
         <button class="surface-btn" id="surfaceBtn" data-no-drag hidden>↑ back to surface</button>
       </div>
@@ -351,15 +351,14 @@
   ];
 
   // --- sand-engine constants (Doc/frontend.md · sand spec) ---
-  const W         = 90;    // grid columns
+  const W         = 60;    // grid columns (60 * 4 = 240px — matches the menu width)
   const S         = 4;     // pixels per cell
-  const viewRows  = 140;   // visible rows (140 * 4 = 560px)
+  const viewRows  = 150;   // visible rows (150 * 4 = 600px)
   const activeH   = 200;   // simulated grid height (taller than the view)
   const BAND      = 16;    // rows per frozen history block
   const FREEZE_AT = 40;    // freeze once the pile peak climbs above this row
   const HEADROOM  = 36;    // air rows kept above the surface while following
   const ARTIFACT_BASE = 6; // grid values >= this are rigid artifact pixels
-  const WELL_TINT = "rgba(22,22,25,0.42)"; // semi-transparent well (desktop shows through)
 
   // --- engine state ---
   const grid = new Uint8Array(W * activeH);
@@ -382,7 +381,7 @@
 
   // Active pourers. Stage 1: just You. Each entry maps to one identity slot.
   const you = {
-    id: "you", name: "You", you: true, slot: 1, x: 45,
+    id: "you", name: "You", you: true, slot: 1, x: 30,
     count: 0, queue: 0,
     css: USER_COLORS[0].css,
   };
@@ -546,7 +545,7 @@
     const offs = [0, -1, 1, -2, 2];
     // Emit at the live source row (= the bulb's bottom opening on screen), so sand
     // always pours OUT of the bulb regardless of how full the bottle is.
-    const row = Math.max(0, Math.min(activeH - 2, srcRow + 12));
+    const row = Math.max(0, Math.min(activeH - 2, srcRow + 18));
     const rb = row * W;
     for (const u of users) {
       let release = Math.min(u.queue, 2);
@@ -614,11 +613,13 @@
         const c = src[base + x];
         if (!c) { colRun[x] = 0; continue; }                 // air resets the column run
         if (c >= ARTIFACT_BASE) { vbuf[o + x] = palU32[c]; colRun[x] = 0; continue; } // artifacts unshaded
-        // Aseprite-style shading: Bayer 4x4 ordered dither across 3 tones, by depth
+        // Aseprite-style Bayer 4x4 dither across 3 tones. Base colour dominates;
+        // highlight (top 1-2px) and shadow (only deep) are thin accents.
         const d = ++colRun[x];
-        let sv = (d - 1) * 0.32; if (sv > 2) sv = 2;         // 0=highlight .. 2=shadow
+        let sv = d <= 3 ? (d - 1) * 0.5 : 1 + Math.max(0, d - 14) * 0.2;
+        if (sv > 2) sv = 2;                                  // 0=highlight, 1=base, 2=shadow
         const lo = sv | 0;
-        const th = BAYER4[by | (x & 3)] * 0.0625;            // threshold in [0,1)
+        const th = BAYER4[by | (x & 3)] * 0.0625;
         const sh = palShade[c];
         vbuf[o + x] = sh[(lo < 2 && (sv - lo) > th) ? lo + 1 : lo];
       }
@@ -645,9 +646,9 @@
   function drawSource(u, cy) {
     const cx = u.x * S, R = 16, step = 4;
     ctx.fillStyle = u.css;
-    ctx.font = "700 9px 'JetBrains Mono', ui-monospace, monospace";
+    ctx.font = "8px 'Silkscreen', 'JetBrains Mono', monospace"; // pixel font
     ctx.textAlign = "center";
-    ctx.fillText(u.name, cx, cy - R - 6);
+    ctx.fillText(u.name, cx, cy - R - 7);
     const tones = [shadeCss(u.css, 1.25), u.css, shadeCss(u.css, 0.72)];
     const glass = hexToRgba(u.css, 0.07);
     const outline = hexToRgba(u.css, 0.5);
@@ -662,7 +663,8 @@
           const n = Math.min(1, Math.abs(cxc) / R);
           const surf = rimRel + dipd * (1 - n);        // funnel surface (centre lower)
           if (cyc >= surf) {
-            let sv = ((cyc - surf) / step) * 0.5; if (sv > 2) sv = 2;
+            const dep = (cyc - surf) / step;             // base-dominant, like the dunes
+            let sv = dep <= 2 ? dep * 0.5 : 1 + Math.max(0, dep - 8) * 0.3; if (sv > 2) sv = 2;
             const lo = sv | 0;
             const th = BAYER4[by | ((gx >> 2) & 3)] * 0.0625;
             ctx.fillStyle = tones[(lo < 2 && (sv - lo) > th) ? lo + 1 : lo];
@@ -681,17 +683,15 @@
   function draw() {
     buildView();
     const frac = cameraY - Math.floor(cameraY);
-    // semi-transparent well: clear to transparent, then lay a translucent tint
-    // so the desktop shows through and the opaque sand pixels read on top.
+    // fully transparent well — only the sand + bulbs paint; the desktop shows
+    // through everywhere else (no background tint).
     ctx.clearRect(0, 0, W * S, viewRows * S);
-    ctx.fillStyle = WELL_TINT;
-    ctx.fillRect(0, 0, W * S, viewRows * S);
     ctx.imageSmoothingEnabled = false;
     ctx.drawImage(view, 0, 0, W, viewRows + 2, 0, -frac * S, W * S, (viewRows + 2) * S);
 
     // pour sources: pixel-art bulbs at the live source row; they scroll with the
     // content (sit at the top while following, scroll off the top when digging)
-    const bulbCy = Math.round((srcRow + 8 - cameraY) * S);
+    const bulbCy = Math.round((srcRow + 14 - cameraY) * S);
     if (bulbCy > -30 && bulbCy < viewRows * S) {
       for (const u of users) drawSource(u, bulbCy);
     }
@@ -929,7 +929,7 @@
   const wsProto = /^(localhost|127\.0\.0\.1)/.test(PARTY_HOST) ? "ws" : "wss";
 
   // slot bookkeeping: you = slot 1; remotes take 2..4, recycling once full.
-  const SPOUT_X = { 1: 45, 2: 22, 3: 62, 4: 78 };
+  const SPOUT_X = { 1: 30, 2: 11, 3: 43, 4: 54 };
   const remoteUsers = Object.create(null); // connId -> user object (also in `users`)
   const usedSlots = new Set([1]);
   function takeSlot() {
@@ -1104,9 +1104,9 @@
   buildPalette();
   buildArtifacts();
   if (demoMode) {
-    users.push({ id: "mina", name: "Mina", you: false, slot: 2, x: 22, count: 0, queue: 0, css: USER_COLORS[1].css, active: 0.8,  burst: 1 });
-    users.push({ id: "theo", name: "Theo", you: false, slot: 3, x: 62, count: 0, queue: 0, css: USER_COLORS[2].css, active: 0.5,  burst: 1 });
-    users.push({ id: "ren",  name: "Ren",  you: false, slot: 4, x: 78, count: 0, queue: 0, css: USER_COLORS[3].css, active: 0.28, burst: 1 });
+    users.push({ id: "mina", name: "Mina", you: false, slot: 2, x: 11, count: 0, queue: 0, css: USER_COLORS[1].css, active: 0.8,  burst: 1 });
+    users.push({ id: "theo", name: "Theo", you: false, slot: 3, x: 43, count: 0, queue: 0, css: USER_COLORS[2].css, active: 0.5,  burst: 1 });
+    users.push({ id: "ren",  name: "Ren",  you: false, slot: 4, x: 54, count: 0, queue: 0, css: USER_COLORS[3].css, active: 0.28, burst: 1 });
     seed();
   }
   updateRoomLabel();
