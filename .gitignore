@@ -13,3 +13,6 @@ src-tauri/gen/
 # OS
 Thumbs.db
 .DS_Store
+
+# Crash dumps (e.g. grep.exe.stackdump under MSYS/Git Bash)
+*.stackdump
