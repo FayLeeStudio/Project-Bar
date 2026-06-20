@@ -83,14 +83,10 @@
     display: block;
     width: 240px; height: 510px;
     background: transparent;                 /* the tint is painted inside the canvas */
-    border: none;                            /* no frame — reads as "just sand", more pet-like */
-    border-radius: 8px;
-    image-rendering: pixelated;
+    border: none;                            /* flat & pure-transparent (Beeper-style): no */
+    image-rendering: pixelated;              /* frame, no drop-shadow, no frost — only sand */
     cursor: grab;
     touch-action: none;
-    box-shadow: 0 10px 34px rgba(0,0,0,.34);
-    backdrop-filter: blur(2px);              /* progressive: frosts the desktop where supported */
-    -webkit-backdrop-filter: blur(2px);
   }
   canvas#bottle.grabbing { cursor: grabbing; }
 
@@ -128,7 +124,7 @@
   }
   .surface-btn[hidden] { display: none; }
 
-  /* ---- bottom bar (drag handle: moves the window) --------------------- */
+  /* ---- top bar (drag handle: moves the window) ----------------------- */
   .bar {
     display: flex;
     align-items: center;
@@ -138,7 +134,6 @@
     border: 1px solid var(--chrome-border);
     border-radius: 8px;
     cursor: grab;
-    box-shadow: 0 6px 20px rgba(0,0,0,.3);
   }
   .bar:active { cursor: grabbing; }
   .bar-stats { flex: 1; min-width: 0; display: flex; align-items: center; gap: 8px; font-size: 12px; }
@@ -169,15 +164,14 @@
   }
   .menu-btn:hover { background: rgba(255,255,255,.12); }
 
-  /* ---- menu (pops above the bar) ------------------------------------- */
+  /* ---- menu (drops down from the top bar) ---------------------------- */
   .menu {
     position: absolute;
-    right: 0; bottom: 46px;
+    right: 0; top: 46px;
     width: 240px;
     background: var(--chrome-bg);
     border: 1px solid var(--chrome-border);
     border-radius: 8px;
-    box-shadow: 0 10px 30px rgba(0,0,0,.4);
     padding: 12px 12px 8px;
     display: flex;
     flex-direction: column;
@@ -254,14 +248,7 @@
   <div class="workbench" id="workbench">
     <div class="pet" id="pet">
 
-      <!-- BODY · the bottle (drag to dig) ----------------------------- -->
-      <div class="bottle-wrap">
-        <canvas id="bottle" width="240" height="510" data-no-drag aria-label="瓶子"></canvas>
-        <div class="scrollbar"><div class="thumb" id="thumb"></div></div>
-        <button class="surface-btn" id="surfaceBtn" data-no-drag hidden>↑ back to surface</button>
-      </div>
-
-      <!-- BAR · stats + menu (drag to move the window) ---------------- -->
+      <!-- BAR · stats + menu, on top (drag to move the window) -------- -->
       <div class="bar" id="bar">
         <div class="bar-stats">
           <span class="live-dot off" id="liveDot"></span>
@@ -291,6 +278,13 @@
         <div class="menu-sep"></div>
         <button class="menu-item" id="resetBtn">empty the bottle</button>
         <button class="menu-item danger" id="exitBtn">exit</button>
+      </div>
+
+      <!-- BODY · the bottle (drag to dig) ----------------------------- -->
+      <div class="bottle-wrap">
+        <canvas id="bottle" width="240" height="510" data-no-drag aria-label="瓶子"></canvas>
+        <div class="scrollbar"><div class="thumb" id="thumb"></div></div>
+        <button class="surface-btn" id="surfaceBtn" data-no-drag hidden>↑ back to surface</button>
       </div>
 
     </div>
@@ -614,11 +608,11 @@
         const c = src[base + x];
         if (!c) { colRun[x] = 0; continue; }                 // air resets the column run
         if (c >= ARTIFACT_BASE) { vbuf[o + x] = palU32[c]; colRun[x] = 0; continue; } // artifacts unshaded
-        // 2-tone shading: ONLY bright + base. The top→deep gradient is done
-        // purely by Bayer 4x4 dither DENSITY (more base pixels with depth) — no
-        // third (dark) colour. sv = fraction of base pixels at this depth.
+        // 2-tone shading (bright + base only): a WIDE pure-bright band on top,
+        // then just two Bayer dither levels, then pure base — keeps the
+        // transition simple (not a busy 16-step ramp).
         const d = ++colRun[x];
-        let sv = (d - 1) / 24; if (sv > 1) sv = 1;   // 0 = all bright (top) .. 1 = all base (deep)
+        const sv = d <= 8 ? 0 : (d <= 13 ? 0.33 : (d <= 18 ? 0.66 : 1));
         const th = BAYER4[by | (x & 3)] * 0.0625;
         vbuf[o + x] = palShade[c][sv > th ? 1 : 0];
       }
@@ -662,8 +656,8 @@
           const n = Math.min(1, Math.abs(cxc) / R);
           const surf = rimRel + dipd * (1 - n);        // funnel surface (centre lower)
           if (cyc >= surf) {
-            const dep = (cyc - surf) / step;             // 2-tone density dither, like the dunes
-            let sv = dep / 6; if (sv > 1) sv = 1;        // bright at the surface → base deeper
+            const dep = (cyc - surf) / step;             // 2-tone, quantized like the dunes
+            const sv = dep <= 2 ? 0 : (dep <= 4 ? 0.5 : 1); // bright top → one dither → base
             const th = BAYER4[by | (((gx / step) | 0) & 3)] * 0.0625;
             ctx.fillStyle = tones[sv > th ? 1 : 0];
           } else {
