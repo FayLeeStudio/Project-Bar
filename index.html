@@ -370,6 +370,9 @@
   let drag = null;
   let frame = 0;
   let palU32 = [];
+  let palShade = [];                 // palShade[slot] = 8 tones, lit crust → deep shadow
+  const SHADE_F = [1.22, 1.08, 1.0, 0.95, 0.91, 0.87, 0.84, 0.80];
+  const colRun = new Int16Array(W);  // depth-from-top run length per column (shading)
   let artifacts = [];
   let fallingArtifact = null;
   let youBaselineSet = false; // first keycount sets a baseline (no grain dump)
@@ -399,10 +402,16 @@
   function packHex(h) {
     return packRGB(parseInt(h.slice(1, 3), 16), parseInt(h.slice(3, 5), 16), parseInt(h.slice(5, 7), 16));
   }
+  function shadeU32(rgb, f) {
+    return packRGB(Math.min(255, Math.round(rgb[0] * f)), Math.min(255, Math.round(rgb[1] * f)), Math.min(255, Math.round(rgb[2] * f)));
+  }
   function buildPalette() {
-    palU32 = [0];
-    for (const u of USER_COLORS) palU32.push(packRGB(u.rgb[0], u.rgb[1], u.rgb[2]));
-    while (palU32.length < ARTIFACT_BASE) palU32.push(0);
+    palU32 = [0]; palShade = [null];
+    for (const u of USER_COLORS) {
+      palU32.push(packRGB(u.rgb[0], u.rgb[1], u.rgb[2]));
+      palShade.push(SHADE_F.map(function (f) { return shadeU32(u.rgb, f); })); // lit crust → deep
+    }
+    while (palU32.length < ARTIFACT_BASE) { palU32.push(0); palShade.push(null); }
   }
 
   // ---------------------------------------------------------------------------
@@ -580,6 +589,7 @@
     const rows = viewRows + 2;
     const nf = frozen.length;
     vbuf.fill(0);
+    colRun.fill(0);
     for (let sr = 0; sr < rows; sr++) {
       const wy = start + sr;
       if (wy < 0) continue;
@@ -593,9 +603,52 @@
         src = frozen[idx]; base = (off - fromTop * BAND) * W;
       }
       const o = sr * W;
-      for (let x = 0; x < W; x++) { const c = src[base + x]; if (c) vbuf[o + x] = palU32[c]; }
+      for (let x = 0; x < W; x++) {
+        const c = src[base + x];
+        if (!c) { colRun[x] = 0; continue; }                 // air resets the column run
+        if (c >= ARTIFACT_BASE) { vbuf[o + x] = palU32[c]; colRun[x] = 0; continue; } // artifacts unshaded
+        // pixel shading by depth below the column's top: lit crust → gradually darker
+        const d = ++colRun[x];
+        const sh = palShade[c];
+        vbuf[o + x] = sh[d < 8 ? d - 1 : 7];
+      }
     }
     vctx.putImageData(vimg, 0, 0);
+  }
+
+  function hexToRgba(hex, a) {
+    const r = parseInt(hex.slice(1, 3), 16), g = parseInt(hex.slice(3, 5), 16), b = parseInt(hex.slice(5, 7), 16);
+    return "rgba(" + r + "," + g + "," + b + "," + a + ")";
+  }
+  function shadeCss(hex, f) {
+    const r = Math.min(255, Math.round(parseInt(hex.slice(1, 3), 16) * f));
+    const g = Math.min(255, Math.round(parseInt(hex.slice(3, 5), 16) * f));
+    const b = Math.min(255, Math.round(parseInt(hex.slice(5, 7), 16) * f));
+    return "rgb(" + r + "," + g + "," + b + ")";
+  }
+  // A translucent "hourglass bulb" source per pourer, pinned at the top: a glass
+  // ring with the pourer's name above, partially filled with their (textured)
+  // sand — the tap the stream falls from.
+  function drawSource(u) {
+    const cx = u.x * S, R = 16, cy = 32;
+    ctx.fillStyle = u.css;
+    ctx.font = "700 9px 'JetBrains Mono', ui-monospace, monospace";
+    ctx.textAlign = "center";
+    ctx.fillText(u.name, cx, 13);
+    ctx.beginPath(); ctx.arc(cx, cy, R, 0, Math.PI * 2);
+    ctx.fillStyle = hexToRgba(u.css, 0.10); ctx.fill();        // faint glass
+    ctx.save(); ctx.clip();                                     // sand only inside the bulb
+    const light = shadeCss(u.css, 1.2), dark = shadeCss(u.css, 0.8);
+    for (let yy = cy - 3; yy < cy + R; yy += 4) {               // lower part filled ("partly shown")
+      for (let xx = cx - R; xx < cx + R; xx += 4) {
+        const h = (((xx * 7) ^ (yy * 13)) & 7);                 // stable grain texture, no flicker
+        ctx.fillStyle = h === 0 ? light : (h < 4 ? u.css : dark);
+        ctx.fillRect(xx, yy, 4, 4);
+      }
+    }
+    ctx.restore();
+    ctx.beginPath(); ctx.arc(cx, cy, R, 0, Math.PI * 2);
+    ctx.lineWidth = 1.5; ctx.strokeStyle = hexToRgba(u.css, 0.5); ctx.stroke();
   }
 
   function draw() {
@@ -609,14 +662,8 @@
     ctx.imageSmoothingEnabled = false;
     ctx.drawImage(view, 0, 0, W, viewRows + 2, 0, -frac * S, W * S, (viewRows + 2) * S);
 
-    // pour spouts (only meaningful near the live surface)
-    if (cameraY < 24) {
-      const sy = Math.max(0, (0 - cameraY) * S);
-      for (const u of users) {
-        ctx.fillStyle = u.css;
-        ctx.fillRect(u.x * S - 2, sy, S + 4, 3);
-      }
-    }
+    // pour sources: a translucent bulb of sand + name, pinned at the top
+    for (const u of users) drawSource(u);
 
     // falling artifact drawn over the sand while it descends through the air
     if (fallingArtifact) {
