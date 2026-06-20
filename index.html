@@ -370,9 +370,11 @@
   let drag = null;
   let frame = 0;
   let palU32 = [];
-  let palShade = [];                 // palShade[slot] = 8 tones, lit crust → deep shadow
-  const SHADE_F = [1.25, 1.0, 0.72]; // 3 chunky tones only: highlight / base / shadow (pixel-art)
+  let palShade = [];                 // palShade[slot] = [highlight, base, shadow] U32 tones
+  const SHADE_F = [1.25, 1.0, 0.72]; // 3 tones, Bayer-dithered between (Aseprite-style)
+  const BAYER4 = [0, 8, 2, 10, 12, 4, 14, 6, 3, 11, 1, 9, 15, 7, 13, 5]; // 4x4 ordered dither
   const colRun = new Int16Array(W);  // depth-from-top run length per column (shading)
+  let srcRow = activeH - viewRows;   // world row of the live pour source (bulbs + spawn share it)
   let artifacts = [];
   let fallingArtifact = null;
   let youBaselineSet = false; // first keycount sets a baseline (no grain dump)
@@ -542,10 +544,9 @@
 
   function spawn() {
     const offs = [0, -1, 1, -2, 2];
-    // Emit ~24 rows above the pile surface, which (while following) lands right
-    // at the bulb's bottom opening on screen — so sand pours OUT of the bulb
-    // instead of streaking down from the canvas edge.
-    const row = Math.max(0, Math.min(activeH - 2, (surface() | 0) - 24));
+    // Emit at the live source row (= the bulb's bottom opening on screen), so sand
+    // always pours OUT of the bulb regardless of how full the bottle is.
+    const row = Math.max(0, Math.min(activeH - 2, srcRow + 12));
     const rb = row * W;
     for (const u of users) {
       let release = Math.min(u.queue, 2);
@@ -608,14 +609,18 @@
         src = frozen[idx]; base = (off - fromTop * BAND) * W;
       }
       const o = sr * W;
+      const by = (wy & 3) << 2;
       for (let x = 0; x < W; x++) {
         const c = src[base + x];
         if (!c) { colRun[x] = 0; continue; }                 // air resets the column run
         if (c >= ARTIFACT_BASE) { vbuf[o + x] = palU32[c]; colRun[x] = 0; continue; } // artifacts unshaded
-        // pixel shading: only 3 chunky tones by depth below the column's top
+        // Aseprite-style shading: Bayer 4x4 ordered dither across 3 tones, by depth
         const d = ++colRun[x];
+        let sv = (d - 1) * 0.32; if (sv > 2) sv = 2;         // 0=highlight .. 2=shadow
+        const lo = sv | 0;
+        const th = BAYER4[by | (x & 3)] * 0.0625;            // threshold in [0,1)
         const sh = palShade[c];
-        vbuf[o + x] = sh[d <= 2 ? 0 : (d <= 6 ? 1 : 2)];
+        vbuf[o + x] = sh[(lo < 2 && (sv - lo) > th) ? lo + 1 : lo];
       }
     }
     vctx.putImageData(vimg, 0, 0);
@@ -631,40 +636,46 @@
     const b = Math.min(255, Math.round(parseInt(hex.slice(5, 7), 16) * f));
     return "rgb(" + r + "," + g + "," + b + ")";
   }
-  // A translucent "hourglass bulb" source per pourer, pinned at the top: a glass
-  // ring with the pourer's name above, partially filled with their (textured)
-  // sand — the tap the stream falls from.
-  function drawSource(u) {
-    const cx = u.x * S, R = 16, cy = 32, step = 4;
-    // name above the bulb
+  // A pixel-art bulb source per pourer (everything on the 4px grid — no
+  // anti-aliased arcs or soft highlights, to stay in the pixel style): a blocky
+  // translucent sphere holding a funnel of their sand (caved in at the centre),
+  // the name above, and an opening at the bottom the stream pours from. `cy` is
+  // the bulb's centre in screen space (shared with the spawn row, so sand always
+  // emerges exactly at the bottom opening).
+  function drawSource(u, cy) {
+    const cx = u.x * S, R = 16, step = 4;
     ctx.fillStyle = u.css;
     ctx.font = "700 9px 'JetBrains Mono', ui-monospace, monospace";
     ctx.textAlign = "center";
-    ctx.fillText(u.name, cx, 13);
-    // translucent glass body
-    ctx.beginPath(); ctx.arc(cx, cy, R, 0, Math.PI * 2);
-    ctx.fillStyle = hexToRgba(u.css, 0.08); ctx.fill();
-    // sand inside: a concave funnel (caved in at the centre, like sand draining),
-    // clipped to the bulb, with only 3 chunky pixel tones
-    ctx.save(); ctx.clip();
-    const rim = cy - R * 0.28, dip = R * 0.62;
-    const light = shadeCss(u.css, 1.25), dark = shadeCss(u.css, 0.72);
-    for (let xx = cx - R; xx < cx + R; xx += step) {
-      const n = Math.min(1, Math.abs((xx + step / 2) - cx) / R); // 0 centre .. 1 rim
-      const topY = Math.round((rim + dip * (1 - n)) / step) * step; // centre sits lower
-      for (let yy = topY; yy < cy + R; yy += step) {
-        const d = (yy - topY) / step;
-        ctx.fillStyle = d < 1 ? light : (yy > cy + R * 0.45 ? dark : u.css);
-        ctx.fillRect(xx, yy, step, step);
+    ctx.fillText(u.name, cx, cy - R - 6);
+    const tones = [shadeCss(u.css, 1.25), u.css, shadeCss(u.css, 0.72)];
+    const glass = hexToRgba(u.css, 0.07);
+    const outline = hexToRgba(u.css, 0.5);
+    const rimRel = -R * 0.30, dipd = R * 0.64;        // funnel offsets, relative to cy
+    for (let gy = cy - R - step; gy <= cy + R + step; gy += step) {
+      const by = ((gy >> 2) & 3) << 2;
+      const cyc = gy + step / 2 - cy;                 // cell centre, relative to cy
+      for (let gx = cx - R - step; gx <= cx + R + step; gx += step) {
+        const cxc = gx + step / 2 - cx;
+        const dist = Math.sqrt(cxc * cxc + cyc * cyc);
+        if (dist <= R) {
+          const n = Math.min(1, Math.abs(cxc) / R);
+          const surf = rimRel + dipd * (1 - n);        // funnel surface (centre lower)
+          if (cyc >= surf) {
+            let sv = ((cyc - surf) / step) * 0.5; if (sv > 2) sv = 2;
+            const lo = sv | 0;
+            const th = BAYER4[by | ((gx >> 2) & 3)] * 0.0625;
+            ctx.fillStyle = tones[(lo < 2 && (sv - lo) > th) ? lo + 1 : lo];
+          } else {
+            ctx.fillStyle = glass;                     // empty upper glass
+          }
+          ctx.fillRect(gx, gy, step, step);
+        } else if (dist <= R + step * 0.7 && !(cyc > R * 0.5 && Math.abs(cxc) < R * 0.34)) {
+          ctx.fillStyle = outline;                     // pixel ring, gap at the bottom
+          ctx.fillRect(gx, gy, step, step);
+        }
       }
     }
-    ctx.restore();
-    // glass specular highlight (top-left) — sells the translucent sphere
-    ctx.beginPath(); ctx.arc(cx - R * 0.36, cy - R * 0.42, R * 0.15, 0, Math.PI * 2);
-    ctx.fillStyle = "rgba(255,255,255,0.32)"; ctx.fill();
-    // glass ring with an opening at the bottom = the spout the sand pours from
-    ctx.beginPath(); ctx.arc(cx, cy, R, 0.60 * Math.PI, 2.40 * Math.PI);
-    ctx.lineWidth = 1.5; ctx.strokeStyle = hexToRgba(u.css, 0.55); ctx.stroke();
   }
 
   function draw() {
@@ -678,8 +689,12 @@
     ctx.imageSmoothingEnabled = false;
     ctx.drawImage(view, 0, 0, W, viewRows + 2, 0, -frac * S, W * S, (viewRows + 2) * S);
 
-    // pour sources: a translucent bulb of sand + name, pinned at the top
-    for (const u of users) drawSource(u);
+    // pour sources: pixel-art bulbs at the live source row; they scroll with the
+    // content (sit at the top while following, scroll off the top when digging)
+    const bulbCy = Math.round((srcRow + 8 - cameraY) * S);
+    if (bulbCy > -30 && bulbCy < viewRows * S) {
+      for (const u of users) drawSource(u, bulbCy);
+    }
 
     // falling artifact drawn over the sand while it descends through the air
     if (fallingArtifact) {
@@ -757,13 +772,14 @@
 
     physics();
     maybeFreeze();
+    const ft = followTarget();
+    srcRow = Math.floor(ft);     // live source row, shared by spawn + the bulbs
     spawn();
     updateArtifact();
 
     if (follow) {
-      const t = followTarget();
-      cameraY += (t - cameraY) * 0.16;
-      if (Math.abs(t - cameraY) < 0.05) cameraY = t;
+      cameraY += (ft - cameraY) * 0.16;
+      if (Math.abs(ft - cameraY) < 0.05) cameraY = ft;
     }
     cameraY = Math.min(maxCameraY(), Math.max(0, cameraY));
 
