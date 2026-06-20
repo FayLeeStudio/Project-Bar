@@ -77,11 +77,11 @@
   .pet { position: relative; display: flex; flex-direction: column; gap: 8px; }
 
   /* ---- the bottle ----------------------------------------------------- */
-  .bottle-wrap { position: relative; width: 240px; height: 600px; }
+  .bottle-wrap { position: relative; width: 240px; height: 510px; }
 
   canvas#bottle {
     display: block;
-    width: 240px; height: 600px;
+    width: 240px; height: 510px;
     background: transparent;                 /* the tint is painted inside the canvas */
     border: none;                            /* no frame — reads as "just sand", more pet-like */
     border-radius: 8px;
@@ -256,7 +256,7 @@
 
       <!-- BODY · the bottle (drag to dig) ----------------------------- -->
       <div class="bottle-wrap">
-        <canvas id="bottle" width="240" height="600" data-no-drag aria-label="瓶子"></canvas>
+        <canvas id="bottle" width="240" height="510" data-no-drag aria-label="瓶子"></canvas>
         <div class="scrollbar"><div class="thumb" id="thumb"></div></div>
         <button class="surface-btn" id="surfaceBtn" data-no-drag hidden>↑ back to surface</button>
       </div>
@@ -351,14 +351,15 @@
   ];
 
   // --- sand-engine constants (Doc/frontend.md · sand spec) ---
-  const W         = 60;    // grid columns (60 * 4 = 240px — matches the menu width)
-  const S         = 4;     // pixels per cell
-  const viewRows  = 150;   // visible rows (150 * 4 = 600px)
+  const W         = 80;    // grid columns (80 * 3 = 240px — matches the menu width)
+  const S         = 3;     // pixels per cell (finer grain than the old 4px)
+  const viewRows  = 170;   // visible rows (170 * 3 = 510px — a touch shorter)
   const activeH   = 200;   // simulated grid height (taller than the view)
   const BAND      = 16;    // rows per frozen history block
   const FREEZE_AT = 40;    // freeze once the pile peak climbs above this row
   const HEADROOM  = 36;    // air rows kept above the surface while following
   const ARTIFACT_BASE = 6; // grid values >= this are rigid artifact pixels
+  const SRC_R = 5;         // source bulb radius in grid rows (R px = SRC_R * S)
 
   // --- engine state ---
   const grid = new Uint8Array(W * activeH);
@@ -381,7 +382,7 @@
 
   // Active pourers. Stage 1: just You. Each entry maps to one identity slot.
   const you = {
-    id: "you", name: "You", you: true, slot: 1, x: 30,
+    id: "you", name: "You", you: true, slot: 1, x: 40,
     count: 0, queue: 0,
     css: USER_COLORS[0].css,
   };
@@ -545,7 +546,7 @@
     const offs = [0, -1, 1, -2, 2];
     // Emit at the live source row (= the bulb's bottom opening on screen), so sand
     // always pours OUT of the bulb regardless of how full the bottle is.
-    const row = Math.max(0, Math.min(activeH - 2, srcRow + 18));
+    const row = Math.max(0, Math.min(activeH - 2, srcRow + 23));
     const rb = row * W;
     for (const u of users) {
       let release = Math.min(u.queue, 2);
@@ -613,11 +614,15 @@
         const c = src[base + x];
         if (!c) { colRun[x] = 0; continue; }                 // air resets the column run
         if (c >= ARTIFACT_BASE) { vbuf[o + x] = palU32[c]; colRun[x] = 0; continue; } // artifacts unshaded
-        // Aseprite-style Bayer 4x4 dither across 3 tones. Base colour dominates;
-        // highlight (top 1-2px) and shadow (only deep) are thin accents.
+        // Aseprite-style shading: 3 roughly-even bands (bright / base / shadow)
+        // with WIDE Bayer 4x4 dither zones between them, by depth from the top.
         const d = ++colRun[x];
-        let sv = d <= 3 ? (d - 1) * 0.5 : 1 + Math.max(0, d - 14) * 0.2;
-        if (sv > 2) sv = 2;                                  // 0=highlight, 1=base, 2=shadow
+        let sv;
+        if (d <= 6) sv = 0;                       // bright band (wide, ~6 rows)
+        else if (d <= 12) sv = (d - 6) / 6;       // dither bright↔base (wide)
+        else if (d <= 18) sv = 1;                 // base band
+        else if (d <= 24) sv = 1 + (d - 18) / 6;  // dither base↔shadow (wide)
+        else sv = 2;                              // shadow band
         const lo = sv | 0;
         const th = BAYER4[by | (x & 3)] * 0.0625;
         const sh = palShade[c];
@@ -644,7 +649,7 @@
   // the bulb's centre in screen space (shared with the spawn row, so sand always
   // emerges exactly at the bottom opening).
   function drawSource(u, cy) {
-    const cx = u.x * S, R = 16, step = 4;
+    const cx = u.x * S, R = SRC_R * S, step = S;
     ctx.fillStyle = u.css;
     ctx.font = "8px 'Silkscreen', 'JetBrains Mono', monospace"; // pixel font
     ctx.textAlign = "center";
@@ -691,8 +696,8 @@
 
     // pour sources: pixel-art bulbs at the live source row; they scroll with the
     // content (sit at the top while following, scroll off the top when digging)
-    const bulbCy = Math.round((srcRow + 14 - cameraY) * S);
-    if (bulbCy > -30 && bulbCy < viewRows * S) {
+    const bulbCy = Math.round((srcRow + 18 - cameraY) * S);
+    if (bulbCy > -(SRC_R * S + 14) && bulbCy < viewRows * S) {
       for (const u of users) drawSource(u, bulbCy);
     }
 
@@ -929,7 +934,7 @@
   const wsProto = /^(localhost|127\.0\.0\.1)/.test(PARTY_HOST) ? "ws" : "wss";
 
   // slot bookkeeping: you = slot 1; remotes take 2..4, recycling once full.
-  const SPOUT_X = { 1: 30, 2: 11, 3: 43, 4: 54 };
+  const SPOUT_X = { 1: 40, 2: 15, 3: 57, 4: 72 };
   const remoteUsers = Object.create(null); // connId -> user object (also in `users`)
   const usedSlots = new Set([1]);
   function takeSlot() {
@@ -1104,9 +1109,9 @@
   buildPalette();
   buildArtifacts();
   if (demoMode) {
-    users.push({ id: "mina", name: "Mina", you: false, slot: 2, x: 11, count: 0, queue: 0, css: USER_COLORS[1].css, active: 0.8,  burst: 1 });
-    users.push({ id: "theo", name: "Theo", you: false, slot: 3, x: 43, count: 0, queue: 0, css: USER_COLORS[2].css, active: 0.5,  burst: 1 });
-    users.push({ id: "ren",  name: "Ren",  you: false, slot: 4, x: 54, count: 0, queue: 0, css: USER_COLORS[3].css, active: 0.28, burst: 1 });
+    users.push({ id: "mina", name: "Mina", you: false, slot: 2, x: 15, count: 0, queue: 0, css: USER_COLORS[1].css, active: 0.8,  burst: 1 });
+    users.push({ id: "theo", name: "Theo", you: false, slot: 3, x: 57, count: 0, queue: 0, css: USER_COLORS[2].css, active: 0.5,  burst: 1 });
+    users.push({ id: "ren",  name: "Ren",  you: false, slot: 4, x: 72, count: 0, queue: 0, css: USER_COLORS[3].css, active: 0.28, burst: 1 });
     seed();
   }
   updateRoomLabel();
