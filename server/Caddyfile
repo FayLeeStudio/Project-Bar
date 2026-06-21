@@ -1,0 +1,9 @@
+# Time in the Bottle — Caddy reverse proxy (reference; deploy.sh writes this for you).
+#
+# Caddy fetches + auto-renews a Let's Encrypt TLS cert for the domain, and
+# transparently proxies the WebSocket upgrade through to the node server on :8090.
+# Replace the domain with yours, put this at /etc/caddy/Caddyfile, `systemctl restart caddy`.
+
+titb.indiegames.design {
+    reverse_proxy 127.0.0.1:8090
+}

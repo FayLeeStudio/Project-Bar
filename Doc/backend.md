@@ -1,24 +1,33 @@
-# Time in the Bottle — 后端规范
+# Time in the Bottle — 后端规范（服务端权威）
 
-> ⚠️ **2026-06-21 架构转向**：后端从 Cloudflare Workers+DO（中继 ticks）改为**常驻 Node 服务 + 服务端权威物理**。本文件下方描述的 DO 协议 / 结构 / 部署**已整体作废**，新协议（输入上报 + 网格增量广播 + 存盘）随阶段 1 实现一并重写。架构背景见 `architecture.md`、`CLAUDE.md`。
+> 2026-06-21 架构转向后的后端：**常驻 Node + ws 服务，跑权威物理**。
+> 旧的 Cloudflare Workers + DO 版本已作废（见 git 历史 / `party/`）。
+> 架构背景见 `architecture.md`、`CLAUDE.md`。
 
 ---
 
-## 架构
+## 职责
 
+后端是一个**常驻、有状态**的进程。对每个房间：
+
+1. 跑 falling-sand 物理模拟（权威），持有该房间唯一的 `grid`（= 房间真相）
+2. 收客户端输入（累计击键数 `ticks`），换算成出沙
+3. 把 `grid` 的**增量变化**广播给同房间所有客户端
+4. 把 `grid` + 玩家档案**持久化到磁盘**（存档），重启 / 新人加入时恢复 / 下发
+
+客户端**不跑物理**：只发输入、收状态、纯渲染。隐私红线：只处理计数 + 网格像素，**绝不**键位内容。
+
+---
+
+## 路由
+
+```text
+ws://<host>/r/<roomId>?_pk=<playerId>
 ```
-[GitHub Pages UI]  ←→  WebSocket(wss)  ←→  [Worker] → [Durable Object: 一个房间]
-                                            /parties/main/{roomId}?_pk={playerId}
-```
 
-Worker 按 `roomId` 把连接路由到对应 DO（`idFromName(roomId)`）。
-
-后端有两个职责：
-
-1. **实时转发**：收到某玩家的 ticks，广播给同房间所有人——仍然不运行物理模拟，只传递整数
-2. **房间持久化**：客户端本地沙堆触发冻结时，把该地层的像素快照上报；DO 把快照和玩家档案写入 storage 持久化；新玩家加入/老玩家重连时，立即把房间当前快照下发，不需要让客户端重放历史
-
-服务端依然不理解快照内容（不解析像素语义），只负责存和发——这点和最初的设计保持一致，只是多了"存"这一步。
+- 每个 `roomId` 对应一个内存中的 `Room`（含 grid + 模拟循环）。
+- `_pk` = 客户端**持久** playerId（存 localStorage 复用），用于认出"老玩家回来了" vs "新玩家"。
+- 默认端口 `8090`（`PORT` 环境变量可改）。生产经 Caddy 反代为 `wss://<domain>`。
 
 ---
 
@@ -27,209 +36,97 @@ Worker 按 `roomId` 把连接路由到对应 DO（`idFromName(roomId)`）。
 ### 客户端 → 服务端
 
 ```ts
-{ type: "join",     name: "Fay", color: "auto" }   // 加入房间；color 当前固定传 "auto"，预留未来手动选色
-{ type: "progress", ticks: 42 }                      // 定时上报击键累计数
-{ type: "freeze",   band: <像素快照> }                // 本地触发冻结时上报该地层；服务端不解析内容，原样存储转发
+{ type:"join",  name:"Fay", color:"auto" }  // 加入；color 由服务端分配
+{ type:"input", ticks: 1234 }               // 累计击键数（服务端算增量 → 出沙）
+{ type:"leave" }                            // 显式退出（释放颜色名额）
+{ type:"reset" }                            // 清空本房间画布（原型：任何人可）
 ```
 
-### 服务端 → 客户端（广播）
+### 服务端 → 客户端
 
 ```ts
-{
-  type: "state",
-  players: {
-    "player-uuid-abc": { name: "Fay",  color: "amber", ticks: 42 },
-    "player-uuid-xyz": { name: "Mina", color: "teal",  ticks: 67 }
-  },
-  frozenBands: [ /* 已冻结地层快照数组，按冻结顺序排列，只追加不可变 */ ]
-}
+// 加入时：完整状态
+{ type:"snapshot", w:80, h:200,
+  players:{ "<id>":{ name, color, ticks }, ... },
+  grid:"<base64 of W*H bytes>" }
+
+// 每 tick：变化的网格单元（扁平 [格子下标, 新值, 格子下标, 新值, ...]）
+{ type:"patch", c:[ idx0,val0, idx1,val1, ... ] }
+
+// 玩家名册变化（join / leave）
+{ type:"players", players:{ "<id>":{ name, color, ticks }, ... } }
+
+// 房间已满（第 5 个新玩家）
+{ type:"error", reason:"room_full" }
 ```
 
-```ts
-{ type: "error", reason: "room_full" }   // 房间已满4人时，拒绝新玩家（已在房间内的人重连不受影响）
-```
+- 格子值：`0`=空，`1..4`=玩家槽位（颜色）。`idx = row*W + col`。
+- 增量优先：高频 tick 只发变化单元；`snapshot` 仅在加入时发一次。
 
 ---
 
-## 节流（客户端负责）
+## 服务端状态结构（`server/index.js`）
 
-```js
-const TICK_INTERVAL_MS = 100; // 唯一需要调整的节流参数，10fps
+每个 `Room`：
 
-let pendingTicks = null;
-
-function onTick(currentTicks) {
-  pendingTicks = currentTicks; // 只保留最新值
-}
-
-setInterval(() => {
-  if (pendingTicks !== null && ws.readyState === WebSocket.OPEN) {
-    ws.send(JSON.stringify({ type: "progress", ticks: pendingTicks }));
-    pendingTicks = null;
-  }
-}, TICK_INTERVAL_MS);
+```text
+grid    : Uint8Array(W*H)   // 唯一真相
+prev    : Uint8Array(W*H)   // 上一帧广播态，用于 diff 出 patch
+players : { playerId: { name, color, ticks } }   // 持久（断线不删）
+queues  : { playerId: 待出沙粒数 }
+conns   : Map<ws, playerId>
 ```
 
-服务端收到什么就广播什么，不做额外节流。
+- 进程重启 / 房间首次激活 → 从 `server/data/<roomId>.json` 读回 `players` + `grid`。
+- 断线（close）：只移除连接，**保留玩家**（离线 ≠ 退出）；房间空闲时停模拟循环省 CPU，grid 留在内存 + 磁盘。
+- 显式 `leave` 才删玩家、释放颜色。
 
 ---
 
-## 服务端结构（`party/server.ts`）
+## 模拟 / 渲染参数（服务端权威，客户端渲染共享同一约定）
 
-> ℹ️ `RaceRoom` 类名 / `project-bar` worker 名沿用自旧版本（Project Bar 赛车主题），语义已不符，但**决定保留不改**：worker 已部署且 `index.html` 的 `PROD_HOST` 指向它，类名对玩家不可见（只用房间码），重命名只会孤儿化线上 worker、改 URL、还要为 DO 类重命名做 migration——无用户侧收益。
+| 参数 | 值 | 说明 |
+|---|---|---|
+| 网格 `W × H` | 80 × 200 | 服务端持有；客户端显示其中一个窗口（viewRows=170） |
+| 颜色槽位 | amber/teal/violet/rose = 1/2/3/4 | `color 名 → grid 值`，全局一致 |
+| 出口 `SPOUT_X` | {1:40,2:15,3:57,4:72} | 按槽位；出口随堆顶上移（`surface - SPAWN_GAP`） |
+| `SPAWN_GAP` | 26 | 出沙口在堆顶上方这么多行 |
+| 物理帧率 | 20fps（`TICK_MS=50`） | 每 tick：spawn → 重力 → diff → 广播 patch |
+| `MAX_SPAWN_PER_TICK` | 4 / 玩家 | 限速，避免狂打字一帧倒满 |
+| 房间容量 | 4 人 | 第 5 个新玩家 → `room_full` |
+| 存盘间隔 | 5s（`SAVE_MS`） | dirty 才写 |
 
-```ts
-export default {
-  async fetch(request, env) {
-    const url = new URL(request.url);
-    const m = url.pathname.match(/^\/parties\/main\/([^/]+)/);
-    if (request.headers.get("Upgrade") === "websocket" && m) {
-      const stub = env.RACEROOM.get(
-        env.RACEROOM.idFromName(decodeURIComponent(m[1]))
-      );
-      return stub.fetch(request);
-    }
-    return new Response("Time in the Bottle room server");
-  },
-};
-
-export class RaceRoom {          // 类名保留(见上方说明),勿改
-  players = {};                  // playerId → { name, color, ticks }（持久化于 storage，断线不删除）
-  frozenBands = [];              // 已冻结地层快照（持久化于 storage，只追加，不可变）
-  conns = new Map();             // WebSocket → playerId（仅用于路由，断线后从这里移除）
-
-  // DO 激活时需先从 state.storage 把 players / frozenBands 读回内存，
-  // 因为 DO 闲置一段时间会被回收，内存字段会丢失，storage 里的才是真正权威的数据
-
-  async fetch(request) {
-    const playerId =
-      new URL(request.url).searchParams.get("_pk") || crypto.randomUUID();
-    const isNewPlayer = !this.players[playerId];
-    const { 0: client, 1: server } = new WebSocketPair();
-    server.accept();
-    if (isNewPlayer && Object.keys(this.players).length >= 4) {
-      // 先 accept 再发 error 再 close:浏览器 WebSocket 读不到 HTTP 403 的响应体,
-      // 只能通过已建立的 WS 通道把 room_full 原因送达客户端,然后主动关闭。
-      server.send(JSON.stringify({ type: "error", reason: "room_full" }));
-      server.close(4001, "room_full");
-      return new Response(null, { status: 101, webSocket: client });
-    }
-    this.conns.set(server, playerId);
-    server.send(JSON.stringify({
-      type: "state",
-      players: this.players,
-      frozenBands: this.frozenBands,   // 完整快照，新玩家/重连直接渲染，不重放
-    }));
-    server.addEventListener("message", (e) => this.onMessage(playerId, e.data));
-    const drop = () => this.onClose(server);
-    server.addEventListener("close", drop);
-    server.addEventListener("error", drop);
-    return new Response(null, { status: 101, webSocket: client });
-  }
-  // onMessage:
-  //   join     → 建档（首次）或恢复在线标记（已存在的 playerId）；写 storage；broadcast()
-  //   progress → 更新该 playerId 的 ticks；broadcast()
-  //   freeze   → 把上报的地层快照 push 进 frozenBands；写 storage；广播给除发送者外的所有人
-  //   坏/未知消息忽略
-  // onClose: 只从 conns 移除对应连接；players 数据保留——房间持久化，离线不等于退出
-  // broadcast: 向 conns 里所有 socket 发 { type:"state", players, frozenBands }
-}
-```
+物理算法（逐行自底向上，重力 + 随机左右下滑，扫描方向逐帧交替）沿用旧客户端引擎，现在跑在服务端、对所有人是同一份。
 
 ---
 
-## 配置（`wrangler.toml`）
+## 持久化
 
-```toml
-name = "project-bar"   # 保留已部署的 worker 名(见上方"类名保留"说明)
-main = "party/server.ts"
-compatibility_date = "2026-06-18"
-
-[[durable_objects.bindings]]
-name = "RACEROOM"
-class_name = "RaceRoom"
-
-[[migrations]]
-tag = "v1"
-new_sqlite_classes = ["RaceRoom"]   # SQLite 版 DO = 免费套餐可用
-```
+- 每房间一个文件 `server/data/<roomId>.json`：`{ players, grid:<base64> }`（gitignored）。
+- 写：dirty 时每 5s 一次 + 房间空闲停机前。读：房间首次激活时。
+- 服务端就是存档的唯一真相；新玩家加入直接收 `snapshot`，不重放。
 
 ---
 
-## 前端接入要点
+## 部署（海外 VPS + Caddy）
 
-- **自带持久 playerId**：用 `?_pk=<playerId>` 连接，`playerId` 需要存进 `localStorage`（如 `localStorage['titb.playerId']`）并复用，**不是每次连接都重新生成**——这样断线重连、关掉应用重开，服务端才能认出"还是同一个人"，而不是把你当成新玩家占掉一个名额
-- **房间容量上限 4 人**：服务端拒绝第 5 个新 `playerId` 的连接（已在房间内的人重连不受影响，靠 `playerId` 匹配判断是否是"老玩家回来了"还是"新玩家想进来"）
-- **本地出沙零延迟**：自己的沙粒由本地 `keycount` 事件即时驱动；只有**别人的**出沙速率从广播 `state` 获取
-- **冻结快照上报**：本地沙堆触发冻结时，把该地层快照通过 `{ type:"freeze", band }` 上报，服务端存档并广播给其他在线玩家。这是房间"沉积持久化"的全部内容——活跃区域（未冻结部分）不需要做快照同步，本来就允许各端画面不完全一致
-- **房间码**：4 位易读码（去掉 I L O 0 1），存 `localStorage['titb.room']`；菜单「新建 / 加入 / 复制链接」——对应两种入口：不带房间号默认新建房间，带房间号或邀请链接则加入已有房间
-- **昵称**：`localStorage['titb.name']`，默认 `玩家-<id前4>`，菜单可改，改后自动重连
-- **主机解析**：`file://` / `localhost` / `127.0.0.1` → `ws://127.0.0.1:8787`（本地 wrangler dev）；否则 → `wss://<PROD_HOST>`
-- **优雅退回单机**：无 `?room=` 参数且未配置 host 时静默不连，不影响单机体验
+一键脚本 `server/deploy.sh`，反代配置 `server/Caddyfile`。流程：
 
-### WebSocket 连接示例
+1. 海外节点 VPS（腾讯云 / 阿里云 香港或新加坡轻量，2C2G）；域名一条 A 记录指向它（如 `titb.indiegames.design`）。
+2. 把仓库弄上去：`git clone <repo>`（推荐，脚本经 `.gitattributes` 保 LF）**或** `scp` 整个仓库；`npm install --omit=dev`。
+3. `sudo server/deploy.sh <domain>`：装 Node、配 systemd（常驻 + 崩溃重启）、装 Caddy（自动 Let's Encrypt 证书 + 反代 `443 → 127.0.0.1:8090`，WebSocket 透传）。
+4. 云控制台安全组放行 `443`（+ `22`）。
+5. 客户端 `index.html` 的 `PROD_HOST` 改为该域名（`wss`），再 push 到 Pages。
 
-```js
-const roomId  = new URLSearchParams(location.search).get("room")
-             || Math.random().toString(36).slice(2, 8);
+> ⚠️ **部署顺序**：先让 VPS 跑起来、本地用 `?host=<domain>` 验证 `wss` 通，**再**改 `PROD_HOST` 并 push 前端。否则线上 Pages 会指向一个还不存在的后端（空瓶 / 连不上）。
 
-// playerId 必须持久化复用，不能每次刷新都重新生成
-let myId = localStorage.getItem("titb.playerId");
-if (!myId) {
-  myId = crypto.randomUUID();
-  localStorage.setItem("titb.playerId", myId);
-}
-
-const ws = new WebSocket(
-  `${wsProto}://${PARTY_HOST}/parties/main/${roomId}?_pk=${myId}`
-);
-
-ws.onopen = () =>
-  ws.send(JSON.stringify({ type: "join", name: playerName, color: "auto" }));
-
-ws.onmessage = ({ data }) => {
-  const { type, players, frozenBands, reason } = JSON.parse(data);
-  if (type === "error") {
-    if (reason === "room_full") showRoomFullNotice();
-    return;
-  }
-  if (type !== "state") return;
-  renderFrozenBands(frozenBands);      // 直接渲染快照，不重放
-  for (const id in players) {
-    if (id === myId) continue;         // 自己本地驱动，跳过
-    const { name, color, ticks } = players[id];
-    // 根据 ticks 设置该用户的出沙速率
-    setSandRate(id, name, color, ticks);
-  }
-};
-```
-
----
-
-## 部署
-
-```bash
-# 本地联调（推荐先做，无需账号）
-npm run party:dev    # = npx wrangler dev，监听 127.0.0.1:8787
-# 浏览器开两个标签：.../index.html?room=TEST&sim
-
-# 上云（异地联机）
-npx wrangler login
-npm run party:deploy  # 打印 time-in-the-bottle.<子域名>.workers.dev
-# 把该地址填进 index.html 的 PROD_HOST
-```
-
-### 房间分享 URL 格式
-
-```
-https://<你的域名>/?room=ABCD
-# Tauri 叠加层需带 #overlay：?room=ABCD#overlay
-```
+本地开发：`npm run server`（localhost:8090），`index.html` 从 `file://` / localhost 自动连本地。
 
 ---
 
 ## 待决
 
-- **中国大陆可达性**：`*.workers.dev` 常被墙，面向大陆分发时需改用海外 VPS 方案（见 `architecture.md`）
-- **冻结仲裁规则（Phase B 已定方向）**：采用**序号守卫的先到先得 + 采纳**——客户端乐观本地冻结并上报它认为的 band 序号，服务端仅当序号 == 当前 `frozenBands.length` 时 CAS 追加；落败端回滚本地、采纳广播来的权威版本。保证全房间单一线性历史，代价是落败端一次视觉跳变（可接受）。具体协议字段待 Phase B 实现时补。
-- **断网缓冲策略**：玩家打字时网络抖动/短暂断线，这段时间产生的 ticks 和即将触发的冻结怎么处理——直接丢弃，还是本地做一个轻量的待发送队列（不是完整存档，只是几秒到几分钟的缓冲，网络恢复后补发）
+- **带宽优化**：`patch` 现为全 grid diff；高频多人时可进一步压（RLE / 只发活跃前沿）。
+- **防作弊**：`input` 信任客户端自报计数（原型）；后期可服务端校验速率。
+- **无限累积**：`grid` 满（H 行）即停止增长；底部压缩 / 滚动（沉降展示）留 Stage 3。
+- **多房间扩展**：单进程多房间；规模大需多进程 / 多机 + 房间路由。
