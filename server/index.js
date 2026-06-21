@@ -206,7 +206,19 @@ class Room {
 const rooms = new Map();
 const getRoom = (id) => { let r = rooms.get(id); if (!r) { r = new Room(id); rooms.set(id, r); } return r; };
 
+const INDEX_HTML = path.join(__dirname, "..", "index.html");
 const server = http.createServer((req, res) => {
+  const p = (req.url || "/").split("?")[0];
+  if (p === "/" || p === "/index.html") {
+    // Serve the client itself over http (testing convenience: no domain/cert
+    // needed — page and ws share this origin, so the browser uses ws:// happily).
+    fs.readFile(INDEX_HTML, (err, buf) => {
+      if (err) { res.writeHead(404); res.end("index.html not found"); return; }
+      res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+      res.end(buf);
+    });
+    return;
+  }
   res.writeHead(200, { "content-type": "text/plain; charset=utf-8" });
   res.end("Time in the Bottle authoritative server\n");
 });

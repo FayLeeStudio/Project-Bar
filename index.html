@@ -655,10 +655,16 @@
 
   // Host: local node server (127.0.0.1:8090) from file:// / localhost; otherwise
   // the VPS (set PROD_HOST in Stage 2). ?host= / localStorage override.
-  const PROD_HOST = ""; // TODO Stage 2: VPS host, e.g. "titb.example.com"
-  const isDev = location.protocol === "file:" || location.hostname === "localhost" || location.hostname === "127.0.0.1";
-  const PARTY_HOST = params.get("host") || localStorage.getItem("titb.partyhost") || (isDev ? "127.0.0.1:8090" : PROD_HOST);
-  const wsProto = /^(localhost|127\.0\.0\.1)/.test(PARTY_HOST) ? "ws" : "wss";
+  const PROD_HOST = ""; // set to the VPS domain once TLS (wss) is on (production via Pages)
+  const isFile = location.protocol === "file:";
+  // Host priority: explicit ?host / saved override → file:// dev default →
+  // configured prod host → the page's OWN origin. The last case is what makes
+  // pure-IP testing work: when the VPS serves this page over http, we connect to
+  // the same origin (ws://<ip>:8090), so no domain/cert is required.
+  const PARTY_HOST = params.get("host") || localStorage.getItem("titb.partyhost")
+    || (isFile ? "127.0.0.1:8090" : (PROD_HOST || location.host));
+  // wss only when the page itself is https (else mixed-content blocks it); ws otherwise.
+  const wsProto = location.protocol === "https:" ? "wss" : "ws";
 
   function b64ToU8(b64) {
     const s = atob(b64), u = new Uint8Array(s.length);
