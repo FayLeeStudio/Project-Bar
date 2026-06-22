@@ -90,8 +90,8 @@ conns   : Map<ws, playerId>
 | 网格 `W × H` | 80 × 200 | 服务端持有；客户端显示其中一个窗口（viewRows=170） |
 | 颜色槽位 | amber/teal/violet/rose = 1/2/3/4 | `color 名 → grid 值`，全局一致 |
 | 出口 `SPOUT_X` | {1:40,2:15,3:57,4:72} | 按槽位；出口随堆顶上移（`surface - SPAWN_GAP`） |
-| `SPAWN_GAP` | 26 | 出沙口在堆顶上方这么多行 |
-| 物理帧率 | 20fps（`TICK_MS=50`） | 每 tick：spawn → 重力 → diff → 广播 patch |
+| `SPAWN_GAP` | 52 | 出沙口在堆顶上方这么多行（高，靠近视口顶） |
+| 物理帧率 | 20fps（`TICK_MS=50`） | 每 tick：spawn → 重力×2 子步 → diff → 广播 patch（2 子步让下落更顺） |
 | `MAX_SPAWN_PER_TICK` | 4 / 玩家 | 限速，避免狂打字一帧倒满 |
 | 房间容量 | 4 人 | 第 5 个新玩家 → `room_full` |
 | 存盘间隔 | 5s（`SAVE_MS`） | dirty 才写 |
