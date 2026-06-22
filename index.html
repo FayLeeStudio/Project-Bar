@@ -347,7 +347,7 @@
   const S = 3;               // pixels per cell on screen
   const viewRows = 170;      // visible rows (170 * 3 = 510px)
   const SRC_R = 5;           // bulb radius in grid rows
-  const SPAWN_GAP = 26;      // source rides this far above the surface (matches server)
+  const SPAWN_GAP = 52;      // source rides this far above the surface (matches server)
   const HEADROOM = 36;       // air rows kept above the surface while following
   const SPOUT_X = { 1: 40, 2: 15, 3: 57, 4: 72 };
 
@@ -404,7 +404,10 @@
     }
     return peak;
   }
-  function followTarget() { return Math.min(maxCameraY(), Math.max(0, surface() - HEADROOM)); }
+  // Anchor the pile's surface at the golden ratio (~0.382 from the top → the
+  // lower 0.618 is the pile); the camera climbs to hold it there once the pile
+  // reaches that line (clamped by maxCameraY). Spout sits SPAWN_GAP above it.
+  function followTarget() { return Math.min(maxCameraY(), Math.max(0, surface() - Math.round(viewRows * 0.382))); }
 
   // ---------------------------------------------------------------------------
   // Render — blit the visible window of the authoritative grid.
@@ -655,7 +658,7 @@
 
   // Host: local node server (127.0.0.1:8090) from file:// / localhost; otherwise
   // the VPS (set PROD_HOST in Stage 2). ?host= / localStorage override.
-  const PROD_HOST = ""; // set to the VPS domain once TLS (wss) is on (production via Pages)
+  const PROD_HOST = "sandtogether.indiegames.design"; // VPS domain (wss via Caddy/Let's Encrypt)
   const isFile = location.protocol === "file:";
   // Host priority: explicit ?host / saved override → file:// dev default →
   // configured prod host → the page's OWN origin. The last case is what makes

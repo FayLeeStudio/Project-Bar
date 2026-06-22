@@ -49,7 +49,8 @@ User=root
 WantedBy=multi-user.target
 UNIT
 systemctl daemon-reload
-systemctl enable --now titb
+systemctl enable titb
+systemctl restart titb   # restart so a fresh git pull's code is actually picked up
 
 # 4) Caddy only when a domain is given (auto HTTPS + wss reverse proxy)
 if [ -n "$DOMAIN" ]; then

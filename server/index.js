@@ -36,7 +36,7 @@ const ROOM_COLORS = ["amber", "teal", "violet", "rose"]; // slot 1..4 = grid val
 const ROOM_CAP = 4;
 const SPOUT_X = { 1: 40, 2: 15, 3: 57, 4: 72 };
 const SPAWN_ROW = 2;          // top boundary for the pour source
-const SPAWN_GAP = 26;         // pour this many rows above the pile's peak (source follows the surface)
+const SPAWN_GAP = 52;         // pour above the peak; tuned with the camera anchor so the spout stays near the top
 const TICK_MS = 50;           // ~20fps physics
 const MAX_SPAWN_PER_TICK = 4; // per player, so a burst doesn't dump all at once
 const SAVE_MS = 5000;
@@ -182,7 +182,7 @@ class Room {
   tick() {
     this.frame++;
     this.spawn();
-    this.physics();
+    this.physics(); this.physics(); // 2 gravity sub-steps/tick (gentler, slower fall)
     const cells = [], g = this.grid, pv = this.prev;
     for (let i = 0; i < g.length; i++) if (g[i] !== pv[i]) { cells.push(i, g[i]); pv[i] = g[i]; }
     if (cells.length) { this.dirty = true; this.broadcast({ type: "patch", c: cells }); }
