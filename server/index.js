@@ -311,6 +311,7 @@ wss.on("connection", (ws, req) => {
     else if (d.type === "input") room.onInput(playerId, d.ticks);
     else if (d.type === "leave") room.leave(playerId);
     else if (d.type === "reset") room.reset();
+    else if (d.type === "ping") { try { ws.send(JSON.stringify({ type: "pong", t: d.t })); } catch (_) {} } // RTT probe / health
   });
   ws.on("close", () => room.drop(ws));
   ws.on("error", () => room.drop(ws));
