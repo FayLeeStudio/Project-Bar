@@ -171,7 +171,10 @@
   /* ---- menu (drops down from the top bar) ---------------------------- */
   .menu {
     position: absolute;
-    right: 0; top: 46px;
+    /* sit to the LEFT of the bottle (not over it): bottle 160 + 12px gap = 172 from
+       the pet's right edge. The window grows left when opened (fitWindow) so this
+       panel sits beside the bottle, never overlapping it and never clipped. */
+    right: 172px; top: 0;
     width: 230px;
     background: var(--chrome-bg);
     border: 1px solid var(--chrome-border);
@@ -341,7 +344,9 @@
   // render cost (draw ms/frame), real frame rate, per-message parse+apply ms,
   // patch size/cells, and round-trip latency (app-level ping/pong). Zero cost when
   // off — every hot-path counter is guarded by PERF. Purely diagnostic.
-  const PERF = params.has("perf") || /(^|[#&])perf/.test(location.hash);
+  // ?debug=1 turns on testing aids (flood button below) AND the perf HUD; ?perf=1 is the HUD alone.
+  const DEBUG = params.has("debug") || /(^|[#&])debug/.test(location.hash);
+  const PERF = DEBUG || params.has("perf") || /(^|[#&])perf/.test(location.hash);
   const perf = PERF ? { frames: 0, patches: 0, bytes: 0, cells: 0, peakCells: 0, parseMs: 0, drawMs: 0, rtt: 0, t0: 0 } : null;
   let perfEl = null;
 
@@ -439,12 +444,18 @@
   // spouts. Anchoring on the bare highest-occupied cell made the camera and the
   // spouts jitter every frame as grains fell past; counting a few cells is stable.
   const SURFACE_MIN_CELLS = 6;
+  // Scan UP FROM THE BOTTOM and stop at the first row that isn't part of the settled
+  // mass — so the wide/fast pour stream (not yet connected to the bottom) can't drag
+  // the camera/spout up with it. Matches the server's surface(). Identical to a
+  // top-down scan whenever the stream is narrow.
   function surface() {
-    for (let y = 0; y < H; y++) {
+    let top = H;
+    for (let y = H - 1; y >= 0; y--) {
       const b = y * W; let n = 0;
-      for (let x = 0; x < W; x++) if (grid[b + x] && ++n >= SURFACE_MIN_CELLS) return y;
+      for (let x = 0; x < W; x++) if (grid[b + x]) n++;
+      if (n >= SURFACE_MIN_CELLS) top = y; else break;
     }
-    return H;
+    return top;
   }
   // Low-passed surface so the camera + spouts glide instead of stepping row by row.
   let smSurface = H;
@@ -693,16 +704,31 @@
   // ---------------------------------------------------------------------------
   // The App window hugs the bottle so it doesn't occlude a ring of desktop around it.
   // When the menu opens we grow the window to the LEFT (right edge fixed, so the bottle
-  // doesn't jump) to make room for a wider, right-aligned menu; shrink back on close.
-  // Browser / no-Tauri: this no-ops and the menu just overlays.
+  // never jumps) to make room for the menu, which sits BESIDE the bottle, not over it.
+  // The grown size is MEASURED from the menu's real dimensions, so it's never clipped no
+  // matter how many players the ranking holds; we shrink back on close. Browser / no-Tauri:
+  // this no-ops and the menu just overlays beside the bottle.
   const WIN_COLLAPSED = { w: 176, h: 564 };
-  const WIN_EXPANDED  = { w: 248, h: 564 };
+  const WORKBENCH_PAD = 8;    // .workbench padding (each side)
+  const BOTTLE_W      = 160;  // canvas / bottle column width
+  const MENU_GAP      = 12;   // gap between menu and bottle (matches .menu right offset)
   let winBusy = false;
+  // Logical window size needed to show the menu fully: pad + menu + gap + bottle + pad
+  // wide, and tall enough for whichever of {menu, collapsed body} is taller.
+  function targetWinSize(open) {
+    if (!open) return WIN_COLLAPSED;
+    const menuW = menu.offsetWidth  || 230;
+    const menuH = menu.offsetHeight || 0;
+    return {
+      w: Math.max(WIN_COLLAPSED.w, Math.ceil(WORKBENCH_PAD + menuW + MENU_GAP + BOTTLE_W + WORKBENCH_PAD)),
+      h: Math.max(WIN_COLLAPSED.h, Math.ceil(WORKBENCH_PAD + menuH + WORKBENCH_PAD)),
+    };
+  }
   async function fitWindow(open) {
     if (!appWindow || !TW || !TW.LogicalSize || !TW.PhysicalPosition || winBusy) return;
     winBusy = true;
     try {
-      const t = open ? WIN_EXPANDED : WIN_COLLAPSED;
+      const t = targetWinSize(open);
       const f = await appWindow.scaleFactor();
       const pos = await appWindow.outerPosition();   // physical
       const size = await appWindow.outerSize();       // physical
@@ -980,6 +1006,27 @@
     }, 1000);
   }
 
+  // --- debug flood button (?debug=1): a firehose toggle to pour sand fast for testing
+  // (watch the pile climb, compress, then drag up into the archived history). Server
+  // stops the firehose on disconnect; toggling it off here also clears it. ---
+  function startDebug() {
+    if (!DEBUG) return;
+    const b = document.createElement("button");
+    b.textContent = "💧 flood";
+    b.setAttribute("data-no-drag", "");
+    b.style.cssText = "position:fixed;right:6px;top:6px;z-index:9999;font:11px 'JetBrains Mono',monospace;" +
+      "padding:4px 8px;border-radius:5px;border:1px solid #7fffd4;background:rgba(0,0,0,.6);color:#7fffd4;cursor:pointer";
+    let on = false;
+    b.addEventListener("click", function (e) {
+      e.stopPropagation();
+      on = !on;
+      b.style.background = on ? "#7fffd4" : "rgba(0,0,0,.6)";
+      b.style.color = on ? "#0a0a0a" : "#7fffd4";
+      if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: "flood", on: on }));
+    });
+    document.body.appendChild(b);
+  }
+
   // --- init ---
   buildPalette();
   updateRoomLabel();
@@ -987,6 +1034,7 @@
   requestAnimationFrame(tick);
   connect();
   startPerf();
+  startDebug();
 })();
 </script>
 </body>
