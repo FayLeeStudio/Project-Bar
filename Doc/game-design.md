@@ -1,4 +1,4 @@
-# Time in the Bottle — 游戏设计
+# Sand Together — 游戏设计
 
 > 本文件定义产品的**玩法逻辑、增长机制和世界观**。
 > 视觉规范见 `frontend.md`，系统架构见 `architecture.md`。

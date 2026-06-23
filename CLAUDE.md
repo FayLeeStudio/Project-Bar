@@ -1,4 +1,4 @@
-# Time in the Bottle — Claude Code 契约
+# Sand Together — Claude Code 契约
 
 > 这是跨 session 的硬约束文件。Claude Code 每次启动必须读取并遵守。
 > 会演化的完整方案放在 `doc/` 目录下各专项文档，本文件只放硬规则，保持精简。

@@ -1,4 +1,4 @@
-# Time in the Bottle — 后端规范（服务端权威）
+# Sand Together — 后端规范（服务端权威）
 
 > 2026-06-21 架构转向后的后端：**常驻 Node + ws 服务，跑权威物理**。
 > 旧的 Cloudflare Workers + DO 版本已作废（见 git 历史 / `party/`）。
@@ -89,8 +89,8 @@ conns   : Map<ws, playerId>
 |---|---|---|
 | 网格 `W × H` | 80 × 200 | 服务端持有；客户端显示其中一个窗口（viewRows=170） |
 | 颜色槽位 | amber/teal/violet/rose = 1/2/3/4 | `color 名 → grid 值`，全局一致 |
-| 出口 `SPOUT_X` | {1:40,2:15,3:57,4:72} | 按槽位；出口随堆顶上移（`surface - SPAWN_GAP`） |
-| `SPAWN_GAP` | 52 | 出沙口在堆顶上方这么多行（高，靠近视口顶） |
+| 出口 `SPOUT_X` | {1:30,2:50,3:10,4:70} | 按槽位、沿 `W=80` 均匀分布（中心向外）；出口随堆顶上移（`surface - SPAWN_GAP`） |
+| `SPAWN_GAP` | 92 | 出沙口在堆顶上方这么多行；与客户端 0.618 镜头锚点配套，使水龙头落在视口顶部附近 |
 | 物理帧率 | 20fps（`TICK_MS=50`） | 每 tick：spawn → 重力×2 子步 → diff → 广播 patch（2 子步让下落更顺） |
 | `MAX_SPAWN_PER_TICK` | 4 / 玩家 | 限速，避免狂打字一帧倒满 |
 | 房间容量 | 4 人 | 第 5 个新玩家 → `room_full` |

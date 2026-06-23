@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Time in the Bottle — deploy for a fresh Ubuntu/Debian overseas VPS.
+# Sand Together — deploy for a fresh Ubuntu/Debian overseas VPS.
 # Run ON the VPS as root (sudo). The repo must already be here (git clone it,
 # then run from inside the repo root). Two modes:
 #
@@ -34,7 +34,7 @@ cd "$APP_DIR" && npm install --omit=dev
 echo "==> writing /etc/systemd/system/titb.service"
 cat >/etc/systemd/system/titb.service <<UNIT
 [Unit]
-Description=Time in the Bottle authoritative server
+Description=Sand Together authoritative server
 After=network.target
 
 [Service]
@@ -72,8 +72,8 @@ CADDY
 
 ==> done (PRODUCTION). verify:
     systemctl status titb --no-pager
-    curl -s https://$DOMAIN/            # → "Time in the Bottle authoritative server"
-Then set index.html PROD_HOST = "$DOMAIN" (wss) and push to Pages.
+    curl -s https://$DOMAIN/            # → "Sand Together authoritative server"
+Then set index.html PROD_HOST = "$DOMAIN" (wss) and redeploy (git pull + systemctl restart titb).
 DONE
 else
   cat <<DONE

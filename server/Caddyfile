@@ -1,4 +1,4 @@
-# Time in the Bottle — Caddy reverse proxy (reference; deploy.sh writes this for you).
+# Sand Together — Caddy reverse proxy (reference; deploy.sh writes this for you).
 #
 # Caddy fetches + auto-renews a Let's Encrypt TLS cert for the domain, and
 # transparently proxies the WebSocket upgrade through to the node server on :8090.

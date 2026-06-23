@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Time in the Bottle</title>
+<title>Sand Together</title>
 
 <!-- Overlay mode: when the Tauri shell loads this page the URL carries #overlay.
      The whole thing then floats on the desktop like a Bongo-Cat sticker — the
@@ -22,7 +22,7 @@
 
 <style>
   /* ----------------------------------------------------------------
-     Time in the Bottle — a desktop-pet overlay. Keystrokes fall as coloured
+     Sand Together — a desktop-pet overlay. Keystrokes fall as coloured
      pixel sand into a semi-transparent bottle floating on the desktop; sand
      piles up, freezes into 16px history bands, and can be dug back up.
      Pure HTML/CSS/vanilla JS — no framework, no build step (CLAUDE.md §5).
@@ -347,9 +347,10 @@
   const S = 3;               // pixels per cell on screen
   const viewRows = 170;      // visible rows (170 * 3 = 510px)
   const SRC_R = 5;           // bulb radius in grid rows
-  const SPAWN_GAP = 52;      // source rides this far above the surface (matches server)
+  const SPAWN_GAP = 92;      // source rides this far above the surface (matches server); with the 0.618 anchor this lands the spout near the top of the view
+  const CAMERA_ANCHOR = 0.618; // pin the pile surface this far down the view; everything above is transparent sky holding the fixed spout
   const HEADROOM = 36;       // air rows kept above the surface while following
-  const SPOUT_X = { 1: 40, 2: 15, 3: 57, 4: 72 };
+  const SPOUT_X = { 1: 30, 2: 50, 3: 10, 4: 70 }; // evenly spaced across W=80, centre-out (must match server)
 
   // --- authoritative grid (mirror of the server's), updated by snapshot/patch ---
   const grid = new Uint8Array(W * H);
@@ -394,20 +395,27 @@
   // Camera helpers — read the surface from the (server-owned) grid.
   // ---------------------------------------------------------------------------
   function maxCameraY() { return Math.max(0, H - viewRows); }
+  // The settled pile top: the first row (scanning top→down) holding enough sand to
+  // be a real surface — NOT the handful of grains still streaming down from the
+  // spouts. Anchoring on the bare highest-occupied cell made the camera and the
+  // spouts jitter every frame as grains fell past; counting a few cells is stable.
+  const SURFACE_MIN_CELLS = 6;
   function surface() {
-    let peak = H;
-    for (let x = 0; x < W; x++) {
-      let y = H - 1;
-      while (y >= 0 && grid[y * W + x]) y--;
-      const top = y + 1;
-      if (top < peak) peak = top;
+    for (let y = 0; y < H; y++) {
+      const b = y * W; let n = 0;
+      for (let x = 0; x < W; x++) if (grid[b + x] && ++n >= SURFACE_MIN_CELLS) return y;
     }
-    return peak;
+    return H;
   }
-  // Anchor the pile's surface at the golden ratio (~0.382 from the top → the
-  // lower 0.618 is the pile); the camera climbs to hold it there once the pile
-  // reaches that line (clamped by maxCameraY). Spout sits SPAWN_GAP above it.
-  function followTarget() { return Math.min(maxCameraY(), Math.max(0, surface() - Math.round(viewRows * 0.382))); }
+  // Low-passed surface so the camera + spouts glide instead of stepping row by row.
+  let smSurface = H;
+  // Keep the pile surface pinned at CAMERA_ANCHOR (0.618) down the view: the upper
+  // ~62% is transparent sky holding the fixed spout, the lower ~38% shows the tower
+  // top. While the tower is short the target sits below maxCameraY, so the camera
+  // just rests at the bottom; once the tower is tall enough to reach the line the
+  // camera follows up (cameraY may go negative — that's just more sky above the grid).
+  function followTarget() { return Math.min(maxCameraY(), Math.round(smSurface) - Math.round(viewRows * CAMERA_ANCHOR)); }
+  function camLo() { return Math.min(followTarget(), maxCameraY()); } // topmost reachable view (anchored surface; may be < 0)
 
   // ---------------------------------------------------------------------------
   // Render — blit the visible window of the authoritative grid.
@@ -487,7 +495,7 @@
     ctx.drawImage(view, 0, 0, W, viewRows + 2, 0, -frac * S, W * S, (viewRows + 2) * S);
 
     // bulbs at the live source row (just above the surface; same rule as server)
-    const srcRow = Math.max(0, surface() - SPAWN_GAP);
+    const srcRow = Math.max(0, Math.round(smSurface) - SPAWN_GAP);
     const bulbCy = Math.round((srcRow - cameraY) * S);
     if (bulbCy > -(SRC_R * S + 14) && bulbCy < viewRows * S) {
       for (const id in players) if (players[id].online !== false) drawSource(players[id], bulbCy);
@@ -547,12 +555,13 @@
   function tick() {
     if (!ctx) { ctx = canvas.getContext("2d"); ctx.imageSmoothingEnabled = false; }
     frame++;
+    smSurface += (surface() - smSurface) * 0.25;   // ease the measured surface (smooth camera + spouts)
     const ft = followTarget();
     if (follow) {
       cameraY += (ft - cameraY) * 0.16;
       if (Math.abs(ft - cameraY) < 0.05) cameraY = ft;
     }
-    cameraY = Math.min(maxCameraY(), Math.max(0, cameraY));
+    cameraY = Math.min(maxCameraY(), Math.max(camLo(), cameraY));
     draw();
     if (frame % 12 === 0) updateChrome();
     requestAnimationFrame(tick);
@@ -598,8 +607,10 @@
   });
   window.addEventListener("pointermove", function (e) {
     if (!drag) return;
+    // Drag UP to dig down into older sand (grab-the-content feel): moving the
+    // pointer up raises cameraY toward the bottom of the well.
     const dy = (e.clientY - drag.y) / S;
-    cameraY = Math.min(maxCameraY(), Math.max(0, drag.cam + dy));
+    cameraY = Math.min(maxCameraY(), Math.max(camLo(), drag.cam - dy));
   });
   window.addEventListener("pointerup", function () {
     if (!drag) return;
@@ -656,16 +667,15 @@
   if (!myId) { myId = freshId(); localStorage.setItem("titb.playerId", myId); }
   let playerName = localStorage.getItem("titb.name") || ("玩家-" + myId.slice(0, 4));
 
-  // Host: local node server (127.0.0.1:8090) from file:// / localhost; otherwise
-  // the VPS (set PROD_HOST in Stage 2). ?host= / localStorage override.
-  const PROD_HOST = "sandtogether.indiegames.design"; // VPS domain (wss via Caddy/Let's Encrypt)
+  // Host: where to reach the authoritative server. The VPS serves THIS page AND the
+  // ws endpoint from the same origin, so by default we just talk back to wherever the
+  // page came from. That makes every case work with no config: prod (https → wss on
+  // sandtogether.indiegames.design), pure-IP, and `npm run server` (http → ws on
+  // 127.0.0.1:8090) alike. file:// has no usable origin, so it falls back to the local
+  // dev server. Override with ?host=… or localStorage('titb.partyhost').
   const isFile = location.protocol === "file:";
-  // Host priority: explicit ?host / saved override → file:// dev default →
-  // configured prod host → the page's OWN origin. The last case is what makes
-  // pure-IP testing work: when the VPS serves this page over http, we connect to
-  // the same origin (ws://<ip>:8090), so no domain/cert is required.
   const PARTY_HOST = params.get("host") || localStorage.getItem("titb.partyhost")
-    || (isFile ? "127.0.0.1:8090" : (PROD_HOST || location.host));
+    || (isFile ? "127.0.0.1:8090" : location.host);
   // wss only when the page itself is https (else mixed-content blocks it); ws otherwise.
   const wsProto = location.protocol === "https:" ? "wss" : "ws";
 
@@ -705,6 +715,8 @@
     grid.fill(0);
     if (msg.grid) { const u8 = b64ToU8(msg.grid); grid.set(u8.subarray(0, W * H)); }
     if (msg.players) applyPlayers(msg.players);
+    smSurface = surface();                 // land on the real surface, no swoop on join
+    if (follow) cameraY = followTarget();
   }
   function applyPatch(cells) {
     if (!cells) return;
@@ -772,7 +784,7 @@
   function clearRoomLocal() {
     grid.fill(0);
     for (const id in players) removePlayer(id);
-    cameraY = H - viewRows; follow = true;
+    cameraY = H - viewRows; follow = true; smSurface = H;
   }
   function switchRoom(code) {
     const r = normRoom(code);

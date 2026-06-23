@@ -1,4 +1,4 @@
-// Time in the Bottle — authoritative room server (Stage 1, server-authoritative).
+// Sand Together — authoritative room server (Stage 1, server-authoritative).
 //
 // The big invariant change (CLAUDE.md, 2026-06-21): physics runs HERE, on the
 // server, once per room. The server holds the one true `grid`; clients only send
@@ -34,9 +34,10 @@ const W = 80;             // grid columns
 const H = 200;            // grid rows (authoritative; the client shows a window)
 const ROOM_COLORS = ["amber", "teal", "violet", "rose"]; // slot 1..4 = grid value
 const ROOM_CAP = 4;
-const SPOUT_X = { 1: 40, 2: 15, 3: 57, 4: 72 };
+const SPOUT_X = { 1: 30, 2: 50, 3: 10, 4: 70 }; // evenly spaced across W=80, centre-out (must match client)
+const SURFACE_MIN_CELLS = 6;  // a row needs this many grains to count as the settled surface
 const SPAWN_ROW = 2;          // top boundary for the pour source
-const SPAWN_GAP = 52;         // pour above the peak; tuned with the camera anchor so the spout stays near the top
+const SPAWN_GAP = 92;         // pour above the peak; tuned with the client's 0.618 camera anchor so the spout sits near the top of the view
 const TICK_MS = 50;           // ~20fps physics
 const MAX_SPAWN_PER_TICK = 4; // per player, so a burst doesn't dump all at once
 const SAVE_MS = 5000;
@@ -131,10 +132,14 @@ class Room {
   }
 
   // ---- physics (ported from the old client engine; now authoritative) ----
-  surface() { // highest occupied row across all columns (smaller = higher)
-    let peak = H;
-    for (let x = 0; x < W; x++) { let y = H - 1; while (y >= 0 && this.grid[y * W + x]) y--; const top = y + 1; if (top < peak) peak = top; }
-    return peak;
+  surface() { // settled pile top: first row (top→down) with enough sand to be a real
+    // surface, not the few grains still falling — keeps the pour source from chasing
+    // its own stream (matches the client's camera anchor).
+    for (let y = 0; y < H; y++) {
+      const b = y * W; let n = 0;
+      for (let x = 0; x < W; x++) if (this.grid[b + x] && ++n >= SURFACE_MIN_CELLS) return y;
+    }
+    return H;
   }
   spawn() {
     const offs = [0, -1, 1, -2, 2];
@@ -220,7 +225,7 @@ const server = http.createServer((req, res) => {
     return;
   }
   res.writeHead(200, { "content-type": "text/plain; charset=utf-8" });
-  res.end("Time in the Bottle authoritative server\n");
+  res.end("Sand Together authoritative server\n");
 });
 const wss = new WebSocketServer({ server });
 wss.on("connection", (ws, req) => {
@@ -239,4 +244,4 @@ wss.on("connection", (ws, req) => {
   ws.on("close", () => room.drop(ws));
   ws.on("error", () => room.drop(ws));
 });
-server.listen(PORT, () => console.log(`[titb] authoritative server on :${PORT}`));
+server.listen(PORT, () => console.log(`[sand] authoritative server on :${PORT}`));

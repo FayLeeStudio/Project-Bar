@@ -1,8 +1,8 @@
 {
-  "name": "time-in-the-bottle-shell",
+  "name": "sand-together-shell",
   "private": true,
   "version": "0.1.0",
-  "description": "Tauri shell for Time in the Bottle — loads the GitHub Pages bottle UI. The web UI itself stays vanilla JS with no build step (index.html).",
+  "description": "Tauri shell for Sand Together — loads the bottle UI served by the VPS. The web UI itself stays vanilla JS with no build step (index.html).",
   "scripts": {
     "tauri": "tauri",
     "dev": "tauri dev",

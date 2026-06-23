@@ -1,6 +1,6 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
-  "productName": "Time in the Bottle",
+  "productName": "Sand Together",
   "version": "0.1.0",
   "identifier": "design.indiegames.project-bar",
   "build": {
@@ -12,7 +12,7 @@
     "windows": [
       {
         "label": "main",
-        "title": "Time in the Bottle",
+        "title": "Sand Together",
         "url": "https://sandtogether.indiegames.design/#overlay",
         "width": 410,
         "height": 660,
