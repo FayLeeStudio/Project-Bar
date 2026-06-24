@@ -81,10 +81,10 @@ async function main() {
 
   // 1) pouring eventually folds the bottom into a band
   const band = await ps[0].until((m) => m.type === "band", 25000);
-  ok(!!band, "heavy pour triggers a band (bottom folded into the archive)");
+  ok(!!band, "heavy pour triggers a band (bottom moved into the archive)");
   ok(band && band.rows === 24, "band.rows = COMPRESS_ROWS (24)");
-  const cols = band ? Buffer.from(band.cols, "base64") : Buffer.alloc(0);
-  ok(cols.length === 80 && [...cols].some((v) => v > 0), "band.cols decodes to W bytes with colour");
+  const cells = band ? Buffer.from(band.cells, "base64") : Buffer.alloc(0);
+  ok(band && cells.length === band.rows * 80 && [...cells].some((v) => v > 0), "band.cells decodes to rows*W lossless pixels with colour");
   ok(band && band.n > 0, "band.n counts the grains it archived");
 
   // 2) after the shift the active grid keeps accepting sand

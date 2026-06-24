@@ -18,18 +18,19 @@
 //   server → client:
 //     { type:"snapshot", w, h, players, grid:<base64>, bands:[...] }  // full state on join
 //     { type:"patch",  c:[idx,val, idx,val, ...] }         // changed cells
-//     { type:"band",   rows, n, cols:<base64 W bytes> }    // Stage 3: a new archived layer
+//     { type:"band",   rows, n, cells:<base64 rows*W bytes> } // Stage 3: a new archived layer (lossless)
 //     { type:"players", players }                          // roster change
 //     { type:"error",  reason:"room_full" }
 //     { type:"pong",   t }                                 // echo of ping t (RTT)
 //   playerId is carried in the URL: ws://host/r/<roomId>?_pk=<persistent-id>
 //
-// Stage 3 (archive compression, infinite stacking): when the settled pile crowds
-// the top of the active grid, the server folds the bottom rows into a thin "band"
-// (one dominant colour per column), shifts the active grid down to free room, and
-// broadcasts a `band`. The client mirrors the same deterministic shift + archives
-// the strip. Privacy red line holds: a band stores only a per-column colour slot +
-// grain counts — never key contents.
+// Stage 3 (archive, infinite stacking): when the settled pile crowds the top of the
+// active grid, the server moves the bottom rows VERBATIM into a "band" (lossless — the
+// exact pixels), shifts the active grid down to free room, and broadcasts a `band`. The
+// client mirrors the same deterministic shift + archives the band, and renders it below
+// the active grid at full resolution (scroll down for the complete history). Size-
+// compression (RLE/gzip) is a later optimization. Privacy red line holds: a band stores
+// only colour slots + grain counts — never key contents.
 
 const http = require("http");
 const fs = require("fs");
@@ -68,17 +69,18 @@ const COMPRESS_ROWS   = numEnv("SAND_COMPRESS_ROWS", 64);   // rows folded into 
 const COMPRESS_MARGIN = numEnv("SAND_COMPRESS_MARGIN", 40); // trigger when the surface reaches this near row 0
 
 const colorSlot = (c) => Math.max(1, ROOM_COLORS.indexOf(c) + 1);
-// A band is the per-column dominant colour of COMPRESS_ROWS folded rows: W bytes
-// (slot 0..4) + `rows` (how many rows it stands for) + `n` (grains it holds).
-const encodeCols = (u8) => Buffer.from(u8).toString("base64");
-function decodeCols(b64) { const buf = Buffer.from(String(b64 || ""), "base64"); const c = new Uint8Array(W); c.set(buf.subarray(0, W)); return c; }
+// A band archives COMPRESS_ROWS real rows LOSSLESSLY: `cells` = rows*W bytes (the exact
+// pixels, slot 0..4) + `rows` + `n` (grain count). No size-compression yet — that's a
+// later optimization (RLE/gzip); step 1 is just a faithful, complete history.
+const b64enc = (u8) => Buffer.from(u8).toString("base64");
+function b64dec(s, len) { const buf = Buffer.from(String(s || ""), "base64"); const a = new Uint8Array(len); a.set(buf.subarray(0, len)); return a; }
 
 class Room {
   constructor(id) {
     this.id = id;
     this.grid = new Uint8Array(W * H);
     this.prev = new Uint8Array(W * H); // last-broadcast grid, for diffing patches
-    this.bands = [];                   // Stage 3 archive: [{ rows, n, cols:Uint8Array(W) }], index 0 = oldest/deepest
+    this.bands = [];                   // Stage 3 archive: [{ rows, n, cells:Uint8Array(rows*W) }], index 0 = oldest/deepest
     this.players = {};                 // playerId -> { name, color, ticks }
     this.queues = {};                  // playerId -> grains pending spawn
     this.flooding = {};                // playerId -> bool (debug fast-fill)
@@ -111,14 +113,14 @@ class Room {
 
   // ---- persistence (the server is the single source of truth) ----
   file() { return path.join(DATA_DIR, this.id.replace(/[^A-Za-z0-9_-]/g, "_") + ".json"); }
-  // Bands for the wire/disk: cols → base64. Old saves have no `bands` → [] (back-compat).
-  serializeBands() { return this.bands.map((b) => ({ rows: b.rows, n: b.n, cols: encodeCols(b.cols) })); }
+  // Bands for the wire/disk: cells → base64. Old saves have no `bands` → [] (back-compat).
+  serializeBands() { return this.bands.map((b) => ({ rows: b.rows, n: b.n, cells: b64enc(b.cells) })); }
   load() {
     try {
       const d = JSON.parse(fs.readFileSync(this.file(), "utf8"));
       if (d.players) this.players = d.players;
       if (d.grid) { const buf = Buffer.from(d.grid, "base64"); this.grid.set(buf.subarray(0, W * H)); }
-      if (Array.isArray(d.bands)) this.bands = d.bands.map((b) => ({ rows: b.rows | 0, n: b.n | 0, cols: decodeCols(b.cols) }));
+      if (Array.isArray(d.bands)) this.bands = d.bands.map((b) => { const rows = b.rows | 0; return { rows, n: b.n | 0, cells: b64dec(b.cells, rows * W) }; });
       this.prev.set(this.grid);
     } catch (_) { /* fresh room */ }
   }
@@ -247,31 +249,23 @@ class Room {
     else if (dr) { g[below + 1] = c; g[i] = 0; }
   }
 
-  // ---- Stage 3: fold the bottom into the archive, free room at the top ----
-  // Take the bottom COMPRESS_ROWS rows (deepest, fully settled), summarise each
-  // column to its dominant colour, append the strip to the archive, then shift the
-  // whole active grid DOWN by that many rows so the top frees up for new sand.
-  // The diff baseline is resynced to the post-shift grid (no giant patch) and a
-  // `band` is broadcast; clients apply the identical deterministic shift.
-  compressBottom() {
+  // ---- Stage 3: move the bottom into the archive, free room at the top ----
+  // Copy the bottom COMPRESS_ROWS rows VERBATIM into a band (lossless — the exact
+  // pixels), append it, then shift the whole active grid DOWN by that many rows so the
+  // top frees up for new sand. The active grid stays bounded (physics cost capped) while
+  // history is preserved exactly. The diff baseline is resynced to the post-shift grid
+  // (no giant patch) and a `band` is broadcast; clients apply the identical shift.
+  archiveBottom() {
     const K = COMPRESS_ROWS, g = this.grid;
-    const cols = new Uint8Array(W);
-    const counts = new Int32Array(5);
-    let n = 0;
-    for (let x = 0; x < W; x++) {
-      counts.fill(0);
-      for (let y = H - K; y < H; y++) { const v = g[y * W + x]; counts[v]++; if (v) n++; }
-      let slot = 0, best = 0;
-      for (let s = 1; s <= 4; s++) if (counts[s] > best) { best = counts[s]; slot = s; }
-      cols[x] = slot;
-    }
-    if (n === 0) return; // nothing settled down there yet — don't archive an empty strip
-    this.bands.push({ rows: K, n, cols });
+    const cells = g.slice((H - K) * W, H * W); // exact bottom K rows (K*W bytes), lossless
+    let n = 0; for (let i = 0; i < cells.length; i++) if (cells[i]) n++;
+    if (n === 0) return; // nothing settled down there yet — don't archive an empty band
+    this.bands.push({ rows: K, n, cells });
     g.copyWithin(K * W, 0, (H - K) * W); // row y -> y+K (memmove handles the overlap)
     g.fill(0, 0, K * W);                  // free the top K rows
     this.prev.set(g);                     // diff baseline = post-shift grid
     this.dirty = true;
-    this.broadcast({ type: "band", rows: K, n, cols: encodeCols(cols) });
+    this.broadcast({ type: "band", rows: K, n, cells: b64enc(cells) });
   }
 
   // ---- loop + broadcast ----
@@ -286,7 +280,7 @@ class Room {
     // archive AFTER the patch broadcast so clients reach the pre-shift grid first,
     // then apply the same shift on the `band` message. Trigger on a packed layer
     // (not the falling curtain) so we only fold a genuinely full bottom.
-    if (H > COMPRESS_ROWS && this.packedTop() <= COMPRESS_MARGIN) this.compressBottom();
+    if (H > COMPRESS_ROWS && this.packedTop() <= COMPRESS_MARGIN) this.archiveBottom();
   }
   snapshotTo(ws) {
     try {
