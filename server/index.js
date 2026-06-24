@@ -13,7 +13,9 @@
 //     { type:"input", ticks }                // cumulative keystroke count → faucet flow
 //     { type:"leave" }                       // explicit exit (frees colour)
 //     { type:"reset" }                       // empty the room's canvas + archive
-//     { type:"flood", on }                   // debug: fast-fill firehose (testing)
+//     { type:"spout", size }                 // pour brush size 1..5 (N×N square)
+//     { type:"pour",  on }                   // debug: keep the spout saturated (see the brush)
+//     { type:"flood", on }                   // debug: fast bottom-fill (archive testing)
 //     { type:"ping",  t }                    // RTT probe → pong
 //   server → client:
 //     { type:"snapshot", w, h, players, grid:<base64>, bands:[...] }  // full state on join
@@ -57,9 +59,14 @@ const SURFACE_MIN_CELLS = 6;  // a row needs this many grains to count as the se
 const SPAWN_ROW = 2;          // top boundary for the pour source
 const SPAWN_GAP = 135;        // pour above the peak; tuned with the client's 0.618 anchor + viewRows=250 so the spout sits near the top of the view
 const TICK_MS = 50;           // ~20fps physics
-const MAX_SPAWN_PER_TICK = numEnv("SAND_MAX_SPAWN", 4); // per player, so a burst doesn't dump all at once (thin stream)
 const SAVE_MS = numEnv("SAND_SAVE_MS", 5000);
-const FLOOD_ROWS_PER_TICK = 6; // debug {type:"flood"}: directly fill this many bottom rows/tick (fast-fill for testing)
+// The pour source is an N×N square "brush" centred on the spout: each tick it refills
+// its N×N footprint from the player's queue. Because the brush is N rows TALL and gravity
+// drops 2 rows/tick, consecutive stamps connect for N≥2 (a continuous N-wide stream);
+// N=1 leaves a 1-row gap (the old one-at-a-time dashed look). Width is capped at SPOUT_MAX.
+const SPOUT_MAX = 5;
+const DEFAULT_SPOUT = numEnv("SAND_SPOUT", 2); // brush size out of the box (2 = continuous + thin)
+const FLOOD_ROWS_PER_TICK = 6; // debug {type:"flood"}: directly fill this many bottom rows/tick (fast archive test)
 
 // --- Stage 3: archive compression (infinite stacking; see doc/stage3-compression.md) ---
 // When the settled surface crowds within COMPRESS_MARGIN rows of the top, fold the
@@ -83,7 +90,9 @@ class Room {
     this.bands = [];                   // Stage 3 archive: [{ rows, n, cells:Uint8Array(rows*W) }], index 0 = oldest/deepest
     this.players = {};                 // playerId -> { name, color, ticks }
     this.queues = {};                  // playerId -> grains pending spawn
-    this.flooding = {};                // playerId -> bool (debug fast-fill)
+    this.spoutSize = {};               // playerId -> N (pour brush size 1..SPOUT_MAX)
+    this.flooding = {};                // playerId -> bool (debug fast bottom-fill)
+    this.pouring = {};                 // playerId -> bool (debug: keep the spout saturated)
     this.conns = new Map();            // ws -> playerId
     this.frame = 0;
     this.dirty = false;                // grid/players changed since last save
@@ -157,16 +166,19 @@ class Room {
     if (delta > 0) this.queues[playerId] = Math.min((this.queues[playerId] || 0) + delta, 600);
     p.ticks = ticks;
   }
-  setFirehose(playerId, on) { if (this.players[playerId]) this.flooding[playerId] = !!on; } // debug fast-fill toggle
+  setSpout(playerId, size) { if (this.players[playerId]) this.spoutSize[playerId] = Math.max(1, Math.min(SPOUT_MAX, size | 0)); }
+  setFirehose(playerId, on) { if (this.players[playerId]) this.flooding[playerId] = !!on; } // debug fast bottom-fill
+  setPour(playerId, on) { if (this.players[playerId]) this.pouring[playerId] = !!on; }       // debug keep spout saturated
   leave(playerId) {
     if (!this.players[playerId]) return;
-    delete this.players[playerId]; delete this.queues[playerId]; delete this.flooding[playerId];
+    delete this.players[playerId]; delete this.queues[playerId];
+    delete this.spoutSize[playerId]; delete this.flooding[playerId]; delete this.pouring[playerId];
     this.dirty = true; this.broadcastPlayers();
   }
-  drop(ws) { // keep player (offline ≠ exit), but stop any debug fast-fill so it can't run forever
+  drop(ws) { // keep player (offline ≠ exit), but stop debug pours so they can't run forever
     const pid = this.conns.get(ws);
     this.conns.delete(ws);
-    if (pid) this.flooding[pid] = false;
+    if (pid) { this.flooding[pid] = false; this.pouring[pid] = false; }
     this.maybeStop();
   }
   reset() { // empty the room's shared canvas + archive (Stage 1: anyone may; prototype)
@@ -194,27 +206,31 @@ class Room {
     }
     return H;
   }
+  // Refill the N×N brush footprint at (sr, x0-centred) from `max` available grains;
+  // returns how many were placed. The brush is N tall so the stream stays continuous.
+  brush(slot, x0, sr, N, max) {
+    let placed = 0; const half = (N - 1) >> 1;
+    for (let r = 0; r < N && placed < max; r++) {
+      const rb = (sr + r) * W;
+      if (rb < 0 || rb + W > W * H) continue;
+      for (let c = 0; c < N && placed < max; c++) {
+        const xx = x0 - half + c;
+        if (xx < 0 || xx >= W) continue;
+        if (this.grid[rb + xx] === 0) { this.grid[rb + xx] = slot; placed++; }
+      }
+    }
+    return placed;
+  }
   spawn() {
-    const offs = [0, -1, 1, -2, 2]; // thin stream: a few columns centred on the spout
     const sr = Math.max(SPAWN_ROW, this.surface() - SPAWN_GAP); // source rides just above the peak
-    const base = sr * W;
     for (const id in this.players) {
-      let q = this.queues[id] || 0;
-      if (q <= 0) continue;
       const slot = colorSlot(this.players[id].color);
       const x0 = SPOUT_X[slot] || 40;
-      let release = Math.min(q, MAX_SPAWN_PER_TICK);
-      while (release > 0) {
-        let placed = false;
-        for (const o of offs) {
-          const xx = x0 + o;
-          if (xx < 0 || xx >= W) continue;
-          if (this.grid[base + xx] === 0) { this.grid[base + xx] = slot; placed = true; break; }
-        }
-        if (!placed) break;
-        q--; release--;
-      }
-      this.queues[id] = q;
+      const N = this.spoutSize[id] || DEFAULT_SPOUT;
+      if (this.pouring[id]) { this.brush(slot, x0, sr, N, N * N); continue; } // debug: tap full open
+      const q = this.queues[id] || 0;
+      if (q <= 0) continue;
+      this.queues[id] = q - this.brush(slot, x0, sr, N, q); // pour from your keystroke queue
     }
   }
   // debug fast-fill: directly pack the lowest empty cells with the player's colour (no
@@ -333,7 +349,9 @@ wss.on("connection", (ws, req) => {
     else if (d.type === "input") room.onInput(playerId, d.ticks);
     else if (d.type === "leave") room.leave(playerId);
     else if (d.type === "reset") room.reset();
-    else if (d.type === "flood") room.setFirehose(playerId, d.on); // debug fast-fill
+    else if (d.type === "spout") room.setSpout(playerId, d.size);  // pour brush size 1..5
+    else if (d.type === "pour") room.setPour(playerId, d.on);      // debug: keep spout saturated
+    else if (d.type === "flood") room.setFirehose(playerId, d.on); // debug: fast bottom-fill
     else if (d.type === "ping") { try { ws.send(JSON.stringify({ type: "pong", t: d.t })); } catch (_) {} } // RTT probe / health
   });
   ws.on("close", () => room.drop(ws));

@@ -40,7 +40,9 @@ ws://<host>/r/<roomId>?_pk=<playerId>
 { type:"input", ticks: 1234 }               // 累计击键数（服务端算增量 → 出沙）
 { type:"leave" }                            // 显式退出（释放颜色名额）
 { type:"reset" }                            // 清空本房间画布 + 归档（原型：任何人可）
-{ type:"flood", on:true }                   // debug：开/关快速灌沙（直接从底部实心填，测试用）
+{ type:"spout", size: 3 }                   // 出水口画笔大小 N×N（1..5）
+{ type:"pour",  on:true }                   // debug：按当前画笔持续出沙（看效果）
+{ type:"flood", on:true }                   // debug：从底部实心快速灌满（测归档）
 { type:"ping",  t: 123 }                    // 测 RTT，服务端原样回 pong
 ```
 
@@ -103,18 +105,25 @@ conns   : Map<ws, playerId>
 | 出口 `SPOUT_X` | {1:30,2:50,3:10,4:70} | 按槽位、沿 `W=80` 均匀分布（中心向外）；出口随堆顶上移（`surface - SPAWN_GAP`） |
 | `SPAWN_GAP` | 135 | 出沙口在堆顶上方这么多行；与客户端 0.618 镜头锚点配套，使水龙头落在视口顶部附近 |
 | 物理帧率 | 20fps（`TICK_MS=50`） | 每 tick：spawn → flood → 重力×2 子步 → diff → 广播 patch → 压缩检查（2 子步让下落更顺） |
-| `MAX_SPAWN_PER_TICK` | 4 / 玩家 | 出沙限速：**细水流**（出口附近一行几列），避免狂打字一帧倒满 |
+| 出水口画笔 `DEFAULT_SPOUT` | 2（上限 `SPOUT_MAX=5`） | 出沙是以出口为锚点的 **N×N 方形画笔**：每 tick 在 footprint 内从队列补满 |
 | 房间容量 | 4 人 | 第 5 个新玩家 → `room_full` |
 | 存盘间隔 | 5s（`SAVE_MS`） | dirty 才写 |
-| `COMPRESS_ROWS`（Stage 3） | 64 | 一次压缩折叠的底部行数（= 一条 band 概括的真实行数） |
-| `COMPRESS_MARGIN`（Stage 3） | 40 | 触发阈值：当**密实层** `packedTop()`（行内 ≥ W/2 的最高行）逼近顶部到这么近时压缩 |
-| `FLOOD_ROWS_PER_TICK` | 6 | debug `flood`：直接从底部实心填这么多行/tick（测试用快速灌满，绕过出沙/物理） |
+| `COMPRESS_ROWS`（Stage 3） | 64 | 一次折叠的底部行数（= 一条 band 的真实行数） |
+| `COMPRESS_MARGIN`（Stage 3） | 40 | 触发阈值：当**密实层** `packedTop()`（行内 ≥ W/2 的最高行）逼近顶部到这么近时归档 |
+| `FLOOD_ROWS_PER_TICK` | 6 | debug `flood`：直接从底部实心填这么多行/tick（快速灌满测归档，绕过出沙/物理） |
 
-> 出沙换算（`onInput`）目前是**简单细水流**：每次击键 +1 粒入队（上限 600），`spawn()` 每 tick 每玩家最多放 `MAX_SPAWN_PER_TICK` 粒、落在出口附近几列。这套"流量/水龙头"模型待重设计——曾试过的"按频率放大流量"版本因水流太宽被回退。
+### 出水口：N×N 方形画笔
+
+每次击键 +1 粒入队（上限 600）。`spawn()` 把出沙做成**以出口为锚点、居中的 N×N 方形画笔**（`N=spoutSize`，1..5）：每 tick 在画笔 footprint 内把空格从队列补满。
+
+- **为什么 N≥2 连续**：画笔 **N 行高**，重力每 tick 落 2 行，所以上下两批正好接上 → 连续 N 列宽的水流；**N=1** 则每隔一行空一格（一颗一颗的旧虚线感）。
+- **吞吐自洽不会堵**：footprint 每 tick 落出底部 2 行 ≈ 2·N 粒，正好 = N 宽水流的吞吐（≤2·N/tick），所以越宽流越快、但不会在出口堆积。
+- 沙的**总量**仍 = 击键数（队列），画笔只决定**宽度/最大流速**。"按频率放大流量/水龙头开关"等是后续在此之上叠加的玩法。
+- debug：`{type:"pour"}` 让画笔满载持续出沙（看效果）；`{type:"spout",size}` 调画笔大小。
 
 物理算法（逐行自底向上，重力 + 随机左右下滑，扫描方向逐帧交替）沿用旧客户端引擎，现在跑在服务端、对所有人是同一份。
 
-> 测试用环境变量(覆盖上表，仅供 smoke 测试起小而快的房间；**生产用默认值**，`W/H` 是与客户端的共享契约)：`SAND_H` / `SAND_COMPRESS_ROWS` / `SAND_COMPRESS_MARGIN` / `SAND_MAX_SPAWN` / `SAND_SAVE_MS` / `SAND_DATA_DIR`。
+> 测试用环境变量(覆盖上表，仅供 smoke 测试起小而快的房间；**生产用默认值**，`W/H` 是与客户端的共享契约)：`SAND_H` / `SAND_COMPRESS_ROWS` / `SAND_COMPRESS_MARGIN` / `SAND_SPOUT` / `SAND_SAVE_MS` / `SAND_DATA_DIR`。
 
 ---
 

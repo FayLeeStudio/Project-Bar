@@ -60,13 +60,8 @@ function open(pk, port) {
   });
 }
 const join = (ws, name) => ws.send(JSON.stringify({ type: "join", name, color: "auto" }));
-
-// keep a player's spawn queue topped so the pile actually reaches the top
-function flood(ws) {
-  let t = 0;
-  const iv = setInterval(() => { if (ws.readyState === 1) { t += 1000; ws.send(JSON.stringify({ type: "input", ticks: t })); } }, 120);
-  return () => clearInterval(iv);
-}
+const flood = (ws, on) => ws.send(JSON.stringify({ type: "flood", on })); // debug fast bottom-fill
+const stopAll = (list) => list.forEach((ws) => { try { flood(ws, false); } catch (_) {} });
 
 async function main() {
   let srv = startServer(PORT_A);
@@ -77,11 +72,11 @@ async function main() {
   ps.forEach((p, i) => join(p, "P" + (i + 1)));
   for (const p of ps) await p.until((m) => m.type === "snapshot");
 
-  const stops = ps.map(flood);
+  flood(ps[0], true); // fast-fill the bottle to trigger archiving
 
-  // 1) pouring eventually folds the bottom into a band
+  // 1) filling eventually moves the bottom into a band
   const band = await ps[0].until((m) => m.type === "band", 25000);
-  ok(!!band, "heavy pour triggers a band (bottom moved into the archive)");
+  ok(!!band, "fast-fill triggers a band (bottom moved into the archive)");
   ok(band && band.rows === 24, "band.rows = COMPRESS_ROWS (24)");
   const cells = band ? Buffer.from(band.cells, "base64") : Buffer.alloc(0);
   ok(band && cells.length === band.rows * 80 && [...cells].some((v) => v > 0), "band.cells decodes to rows*W lossless pixels with colour");
@@ -98,7 +93,7 @@ async function main() {
   ok(s4 && Array.isArray(s4.bands) && s4.bands.length >= 1, "late joiner's snapshot includes bands");
   ok(s4 && gridNonZero(s4.grid) > 0, "late joiner's snapshot carries the active grid too");
 
-  stops.forEach((s) => s());
+  stopAll(ps);
   [...ps, p4].forEach((w) => { try { w.close(); } catch (_) {} });
 
   // 4) bands survive a server restart (disk persistence)

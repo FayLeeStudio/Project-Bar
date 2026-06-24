@@ -990,25 +990,41 @@
     }, 1000);
   }
 
-  // --- debug flood button (?debug=1): a firehose toggle to pour sand fast for testing
-  // (watch the pile climb, compress, then drag up into the archived history). Server
-  // stops the firehose on disconnect; toggling it off here also clears it. ---
+  // --- debug panel (?debug=1): pick the pour brush size 1..5, plus two pour helpers.
+  //   1..5    → set the N×N spout brush (server applies it to YOUR pours)
+  //   💧pour  → keep the spout saturated so you can SEE the chosen brush streaming
+  //   ⏬fill   → fast direct bottom-fill (quickly fill the bottle to test the archive)
+  // Server clears pour/flood on disconnect. ---
   function startDebug() {
     if (!DEBUG) return;
-    const b = document.createElement("button");
-    b.textContent = "💧 flood";
-    b.setAttribute("data-no-drag", "");
-    b.style.cssText = "position:fixed;right:6px;top:6px;z-index:9999;font:11px 'JetBrains Mono',monospace;" +
-      "padding:4px 8px;border-radius:5px;border:1px solid #7fffd4;background:rgba(0,0,0,.6);color:#7fffd4;cursor:pointer";
-    let on = false;
-    b.addEventListener("click", function (e) {
-      e.stopPropagation();
-      on = !on;
-      b.style.background = on ? "#7fffd4" : "rgba(0,0,0,.6)";
-      b.style.color = on ? "#0a0a0a" : "#7fffd4";
-      if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: "flood", on: on }));
-    });
-    document.body.appendChild(b);
+    const send = function (m) { if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(m)); };
+    const bar = document.createElement("div");
+    bar.setAttribute("data-no-drag", "");
+    bar.style.cssText = "position:fixed;right:6px;top:6px;z-index:9999;display:flex;gap:3px;align-items:center;" +
+      "font:11px 'JetBrains Mono',monospace";
+    const OFF = "rgba(0,0,0,.6)", ON = "#7fffd4";
+    function mk(label, title) {
+      const b = document.createElement("button");
+      b.textContent = label; if (title) b.title = title;
+      b.setAttribute("data-no-drag", "");
+      b.style.cssText = "padding:3px 6px;border-radius:5px;border:1px solid #7fffd4;background:" + OFF + ";color:#7fffd4;cursor:pointer";
+      bar.appendChild(b); return b;
+    }
+    function lit(b, on) { b.style.background = on ? ON : OFF; b.style.color = on ? "#0a0a0a" : "#7fffd4"; }
+    const tag = document.createElement("span"); tag.textContent = "spout"; tag.style.color = "#7fffd4"; bar.appendChild(tag);
+    let size = 2; const sizeBtns = [];
+    for (let n = 1; n <= 5; n++) {
+      const b = mk(String(n), "brush " + n + "×" + n);
+      b.addEventListener("click", function (e) { e.stopPropagation(); size = n; send({ type: "spout", size: n }); sizeBtns.forEach(function (x, i) { lit(x, i + 1 === size); }); });
+      sizeBtns.push(b);
+    }
+    sizeBtns.forEach(function (x, i) { lit(x, i + 1 === size); });
+    let pour = false, fill = false;
+    const pourB = mk("💧pour", "pour through the spout continuously (see the brush)");
+    pourB.addEventListener("click", function (e) { e.stopPropagation(); pour = !pour; lit(pourB, pour); send({ type: "pour", on: pour }); });
+    const fillB = mk("⏬fill", "fast direct bottom-fill (quick archive test)");
+    fillB.addEventListener("click", function (e) { e.stopPropagation(); fill = !fill; lit(fillB, fill); send({ type: "flood", on: fill }); });
+    document.body.appendChild(bar);
   }
 
   // --- init ---
