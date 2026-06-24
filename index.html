@@ -120,9 +120,9 @@
   .nav-btn {
     position: absolute;
     left: 14px; right: 14px;
-    height: 20px;
+    height: 24px;
     display: flex; align-items: center; justify-content: center;
-    font-family: inherit; font-size: 9.5px; letter-spacing: .16em; text-transform: uppercase;
+    font-family: inherit; font-size: 11px; letter-spacing: .12em;
     color: #161619;
     background: var(--color-accent);
     border: none; border-radius: 10px;
@@ -315,8 +315,8 @@
       <div class="bottle-wrap">
         <canvas id="bottle" width="160" height="500" data-no-drag aria-label="瓶子"></canvas>
         <div class="scrollbar"><div class="thumb" id="thumb"></div></div>
-        <button class="nav-btn nav-top" id="surfaceBtn" data-no-drag hidden>↑ back to surface</button>
-        <button class="nav-btn nav-bot" id="peekBtn" data-no-drag hidden>↓ dig into history</button>
+        <button class="nav-btn nav-top" id="surfaceBtn" data-no-drag hidden title="回到地表">↑ 地表</button>
+        <button class="nav-btn nav-bot" id="peekBtn" data-no-drag hidden title="往下挖历史">↓ 更早</button>
       </div>
 
     </div>
@@ -481,8 +481,14 @@
   // sand, no big empty gap. CAMERA_ANCHOR: where the settled surface sits down the view
   // (0.30 → surface ~30% down, so sand fills the lower ~70% and the spout rides near the
   // top, close to the bar). Lower CAMERA_ANCHOR pushes the surface + spout higher.
-  const SPAWN_GAP = 16;      // source rides this far above the surface (matches server)
-  const CAMERA_ANCHOR = 0.15; // pin the settled surface this far down the view (small → spout hugs the top bar, almost no sky above; sand fills the lower ~85%)
+  // Two knobs for the look:
+  //   CAMERA_ANCHOR = where the settled SURFACE sits down the view. 0.382 → sand fills
+  //                   the lower ~0.618 (golden ratio). Bigger = less sand.
+  //   SPAWN_GAP     = how far the SPOUT floats above the surface (also the server's spawn
+  //                   altitude — keep both in sync). Spout's screen position works out to
+  //                   CAMERA_ANCHOR*viewRows − SPAWN_GAP ≈ 8% down (hugs the top bar).
+  const SPAWN_GAP = 75;      // source rides this far above the surface (matches server)
+  const CAMERA_ANCHOR = 0.382; // pin the settled surface ~0.382 down → sand fills lower ~0.618
   const SPOUT_X = { 1: 30, 2: 50, 3: 10, 4: 70 }; // evenly spaced across W=80, centre-out (must match server)
 
   // --- authoritative grid (mirror of the server's), updated by snapshot/patch ---
