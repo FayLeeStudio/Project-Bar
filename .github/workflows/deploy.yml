@@ -1,0 +1,38 @@
+name: deploy
+
+# Push to main → SSH into the VPS, fast-forward /opt/titb, and restart the
+# backend ONLY when server code changed (frontend is served no-cache, so a plain
+# git pull is enough for index.html / docs). Manual run available via the Actions
+# tab ("Run workflow"). Requires three repo secrets: VPS_HOST, VPS_USER, VPS_SSH_KEY.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# never let two deploys race; a newer push supersedes an in-flight one
+concurrency:
+  group: deploy-main
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4   # only to ship .github/ci-deploy.sh to the runner
+
+      - name: Deploy to VPS over SSH
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+        run: |
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          printf '%s\n' "$VPS_SSH_KEY" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          # pipe the deploy script (from this checkout) to the remote shell — no
+          # heredoc-in-YAML escaping, logic stays version-controlled in the repo.
+          ssh -i ~/.ssh/deploy_key -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new \
+              "$VPS_USER@$VPS_HOST" 'bash -s' < .github/ci-deploy.sh
