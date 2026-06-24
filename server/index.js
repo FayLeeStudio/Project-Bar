@@ -57,7 +57,7 @@ const ROOM_CAP = 4;
 const SPOUT_X = { 1: 30, 2: 50, 3: 10, 4: 70 }; // evenly spaced across W=80, centre-out (must match client)
 const SURFACE_MIN_CELLS = 6;  // a row needs this many grains to count as the settled surface
 const SPAWN_ROW = 2;          // top boundary for the pour source
-const SPAWN_GAP = 135;        // pour above the peak; tuned with the client's 0.618 anchor + viewRows=250 so the spout sits near the top of the view
+const SPAWN_GAP = 16;         // pour just above the settled surface (matches the client's spout offset) — short fall, no big empty gap
 const TICK_MS = 50;           // ~20fps physics
 const SAVE_MS = numEnv("SAND_SAVE_MS", 5000);
 // The pour source is an N×N square "brush" centred on the spout: each tick it refills

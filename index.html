@@ -468,9 +468,14 @@
   const S = 2;               // px per cell — SQUARE pixels. 80*2=160px wide; with viewRows below the bottle is 500px tall
   const viewRows = 250;      // visible rows (250 * S = 500px); must stay < H so the camera has room to scroll
   const SRC_R = 5;           // bulb radius in grid rows (scales with S → a smaller, still-round ball at S=2)
-  const SPAWN_GAP = 135;     // source rides this far above the surface (matches server); with the 0.618 anchor + viewRows=250 this lands the spout near the top of the view
-  const CAMERA_ANCHOR = 0.618; // pin the pile surface this far down the view; everything above is transparent sky holding the fixed spout
-  const HEADROOM = 36;       // air rows kept above the surface while following
+  // --- spout / camera placement (tune these two to taste) ---
+  // SPAWN_GAP: how far the spout floats ABOVE the settled surface (matches the server's
+  // spawn altitude, so the bulb sits where sand actually emerges). Small = spout hugs the
+  // sand, no big empty gap. CAMERA_ANCHOR: where the settled surface sits down the view
+  // (0.30 → surface ~30% down, so sand fills the lower ~70% and the spout rides near the
+  // top, close to the bar). Lower CAMERA_ANCHOR pushes the surface + spout higher.
+  const SPAWN_GAP = 16;      // source rides this far above the surface (matches server)
+  const CAMERA_ANCHOR = 0.30; // pin the settled surface this far down the view
   const SPOUT_X = { 1: 30, 2: 50, 3: 10, 4: 70 }; // evenly spaced across W=80, centre-out (must match server)
 
   // --- authoritative grid (mirror of the server's), updated by snapshot/patch ---
@@ -708,7 +713,12 @@
   function tick() {
     if (!ctx) { ctx = canvas.getContext("2d"); ctx.imageSmoothingEnabled = false; }
     frame++;
-    smSurface += (surface() - smSurface) * 0.25;   // ease the measured surface (smooth camera + spouts)
+    // Stable surface: rise toward the pile top quickly as sand is added, but only DRIFT
+    // down slowly. So the measured surface tracks the settled high-water mark and the
+    // camera + spouts stay put when you're not pouring — no per-frame jitter. (smSurface
+    // is a row index; smaller = higher pile, so a growing pile means s < smSurface.)
+    const s = surface();
+    smSurface += (s - smSurface) * (s < smSurface ? 0.2 : 0.02);
     const ft = followTarget();
     if (follow) {
       cameraY += (ft - cameraY) * 0.16;
