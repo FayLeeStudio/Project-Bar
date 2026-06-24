@@ -5,7 +5,7 @@ use std::sync::{
 };
 
 use rdev::{listen, EventType};
-use tauri::{DeviceEventFilter, Emitter, Manager};
+use tauri::{DeviceEventFilter, Emitter, Listener, Manager};
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -65,6 +65,38 @@ pub fn run() {
           }
         });
       });
+
+      // ---- menu popover window (separate frameless window; tauri.conf visible:false) ----
+      // The bar's ≡ emits "menu:open"; we place the popover just left of the bottle window
+      // (so it never covers it) and show it. It hides itself on blur (click-away), like a
+      // native popover. "app:exit" (the menu's exit button) quits the whole app.
+      if let Some(menu) = handle.get_webview_window("menu") {
+        let menu_blur = menu.clone();
+        menu.on_window_event(move |ev| {
+          if let tauri::WindowEvent::Focused(false) = ev {
+            let _ = menu_blur.hide();
+          }
+        });
+      }
+      let open_h = handle.clone();
+      handle.listen_any("menu:open", move |_| {
+        let (main, menu) = match (
+          open_h.get_webview_window("main"),
+          open_h.get_webview_window("menu"),
+        ) {
+          (Some(m), Some(n)) => (m, n),
+          _ => return,
+        };
+        // place the popover just left of the bottle window, top-aligned, clamped on-screen
+        if let (Ok(p), Ok(ms)) = (main.outer_position(), menu.outer_size()) {
+          let x = (p.x - ms.width as i32 - 8).max(0);
+          let _ = menu.set_position(tauri::PhysicalPosition::new(x, p.y));
+        }
+        let _ = menu.show();
+        let _ = menu.set_focus();
+      });
+      let exit_h = handle.clone();
+      handle.listen_any("app:exit", move |_| exit_h.exit(0));
 
       Ok(())
     })

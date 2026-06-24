@@ -1,0 +1,19 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "menu-window",
+  "description": "The menu popover window (remote #menu page): receive the roster via events, send user actions + exit back, and hide itself. Positioning + click-away hiding are done natively (Rust), so this window needs no window-geometry permissions.",
+  "windows": ["menu"],
+  "remote": {
+    "urls": [
+      "https://sandtogether.indiegames.design",
+      "http://localhost:8090",
+      "http://127.0.0.1:8090"
+    ]
+  },
+  "permissions": [
+    "core:event:allow-listen",
+    "core:event:allow-unlisten",
+    "core:event:allow-emit",
+    "core:window:allow-hide"
+  ]
+}

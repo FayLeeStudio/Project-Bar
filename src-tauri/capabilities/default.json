@@ -7,7 +7,9 @@
   ],
   "remote": {
     "urls": [
-      "https://sandtogether.indiegames.design"
+      "https://sandtogether.indiegames.design",
+      "http://localhost:8090",
+      "http://127.0.0.1:8090"
     ]
   },
   "permissions": [
@@ -15,6 +17,7 @@
     "core:window:allow-close",
     "core:window:allow-start-dragging",
     "core:event:allow-listen",
-    "core:event:allow-unlisten"
+    "core:event:allow-unlisten",
+    "core:event:allow-emit"
   ]
 }

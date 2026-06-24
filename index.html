@@ -11,7 +11,12 @@
      and its little control bar paint. In a plain browser (no #overlay) we keep a
      warm backdrop so the floating bottle stays visible for dev. -->
 <script>
-  if (location.hash.indexOf("overlay") !== -1) {
+  // #menu  → the standalone, frameless popover window that shows ONLY the menu
+  //          (opened beside the bottle by the shell; never covers/clips it).
+  // #overlay → the bottle sticker itself (transparent, floats on the desktop).
+  if (location.hash.indexOf("menu") !== -1) {
+    document.documentElement.classList.add("menumode");
+  } else if (location.hash.indexOf("overlay") !== -1) {
     document.documentElement.classList.add("overlay");
   }
 </script>
@@ -171,10 +176,7 @@
   /* ---- menu (drops down from the top bar) ---------------------------- */
   .menu {
     position: absolute;
-    /* sit to the LEFT of the bottle (not over it): bottle 160 + 12px gap = 172 from
-       the pet's right edge. The window grows left when opened (fitWindow) so this
-       panel sits beside the bottle, never overlapping it and never clipped. */
-    right: 172px; top: 0;
+    right: 0; top: 46px;
     width: 230px;
     background: var(--chrome-bg);
     border: 1px solid var(--chrome-border);
@@ -242,6 +244,21 @@
     border: none; border-radius: 5px;
     padding: 0 12px; cursor: pointer;
   }
+
+  /* ---- standalone menu popover window (#menu) ------------------------ */
+  /* This page is loaded a SECOND time in its own frameless, transparent Tauri
+     window; there it shows only the menu, filling the window as a floating panel. */
+  html.menumode, html.menumode body { background: transparent !important; overflow: hidden; }
+  html.menumode .workbench { padding: 0; min-height: 0; display: block; }
+  html.menumode .pet { display: block; }
+  html.menumode .bar, html.menumode .bottle-wrap { display: none; }
+  html.menumode .menu {
+    position: static; right: auto; top: auto;
+    width: 100%; min-height: 100vh;
+    border: none; border-radius: 10px;
+    overflow-y: auto;
+  }
+  html.menumode .menu[hidden] { display: flex; }   /* this window IS the menu — always shown */
 
   @keyframes blink { 0%,55% { opacity: 1; } 56%,100% { opacity: 0; } }
   @media (prefers-reduced-motion: reduce) {
@@ -361,6 +378,90 @@
   ];
   const COLOR_NAMES = ["amber", "teal", "violet", "rose"];
   function colorToSlot(c) { const i = COLOR_NAMES.indexOf(c); return i >= 0 ? i + 1 : 1; }
+
+  // ---------------------------------------------------------------------------
+  // Menu popover window (#menu) — a separate, frameless Tauri window showing ONLY
+  // the menu, so it never covers (or is clipped by) the tiny bottle window. It holds
+  // NO game state: the main overlay window pushes the roster here via a 'menu:state'
+  // event, and we send user actions back via 'menu:cmd' (+ 'app:exit' to quit). The
+  // server-authoritative model is intact — this window only renders what it's handed.
+  // ---------------------------------------------------------------------------
+  if (document.documentElement.classList.contains("menumode")) { runMenuWindow(); return; }
+  function runMenuWindow() {
+    menu.hidden = false;                         // this whole window IS the menu
+    const selfWin = (TW && TW.getCurrentWindow) ? TW.getCurrentWindow() : null;
+    function selfHide() { try { if (selfWin && selfWin.hide) selfWin.hide(); } catch (_) {} }
+    function emitCmd(p) { if (TE && TE.emit) TE.emit("menu:cmd", p); }
+    function copyToClipboard(t) {
+      if (!t) return;                            // we have the button's user-activation here,
+      function fallback() {                      // so clipboard writes are reliable (unlike the
+        const ta = document.createElement("textarea"); ta.value = t;  // unfocused main window).
+        ta.style.position = "fixed"; ta.style.opacity = "0";
+        document.body.appendChild(ta); ta.focus(); ta.select();
+        try { document.execCommand("copy"); } catch (_) {}
+        ta.remove();
+      }
+      if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).catch(fallback);
+      else fallback();
+    }
+
+    let last = {};
+    function render(s) {
+      last = s || {};
+      buriedText.textContent = (s.buried || 0).toLocaleString();
+      roomCodeEl.textContent = s.room || "----";
+      const list = s.players || [];
+      let max = 1; for (const p of list) if (p.count > max) max = p.count;
+      rankingEl.textContent = "";
+      for (const p of list) {
+        const row = document.createElement("div"); row.className = "rank-row";
+        const head = document.createElement("div"); head.className = "rank-head";
+        const sw = document.createElement("span"); sw.className = "rank-swatch"; sw.style.background = p.css;
+        const nm = document.createElement("span"); nm.className = "rank-name"; nm.textContent = p.name;
+        const role = document.createElement("span"); role.className = "rank-role"; role.textContent = p.you ? "you" : "teammate";
+        const cnt = document.createElement("span"); cnt.className = "rank-count"; cnt.textContent = (p.count || 0).toLocaleString();
+        head.appendChild(sw); head.appendChild(nm); head.appendChild(role); head.appendChild(cnt);
+        const barEl = document.createElement("div"); barEl.className = "rank-bar";
+        const fill = document.createElement("i"); fill.style.background = p.css;
+        fill.style.width = Math.max(3, Math.round((p.count / max) * 100)) + "%";
+        barEl.appendChild(fill);
+        row.appendChild(head); row.appendChild(barEl);
+        rankingEl.appendChild(row);
+      }
+    }
+
+    if (TE && TE.listen) TE.listen("menu:state", function (e) { try { render(e.payload || {}); } catch (_) {} });
+    if (TE && TE.emit) TE.emit("menu:request");    // pull the current roster on open
+
+    let editMode = "room";
+    function openEdit(mode) {
+      editMode = mode; editRow.hidden = false;
+      if (mode === "name") { editInput.placeholder = "你的昵称…"; editInput.maxLength = 16; }
+      else { editInput.placeholder = "输入房间号加入…"; editInput.maxLength = 12; }
+      editInput.value = ""; editInput.focus();
+    }
+    function saveEdit() {
+      const v = editInput.value.trim(); editRow.hidden = true;
+      if (editMode === "name") { if (v) { emitCmd({ action: "setName", name: v }); selfHide(); } }
+      else { if (v) { emitCmd({ action: "join", room: v }); selfHide(); } }
+    }
+
+    newRoomBtn.addEventListener("click", function () { emitCmd({ action: "newRoom" }); selfHide(); });
+    joinRoomBtn.addEventListener("click", function () { openEdit("room"); });
+    nameBtn.addEventListener("click", function () { openEdit("name"); });
+    copyLinkBtn.addEventListener("click", function () {
+      copyToClipboard(last.link);                // link is built by the main window (state)
+      const old = copyLinkBtn.textContent; copyLinkBtn.textContent = "✓ copied";
+      setTimeout(function () { copyLinkBtn.textContent = old; }, 1200);
+    });
+    editSave.addEventListener("click", saveEdit);
+    editInput.addEventListener("keydown", function (e) {
+      if (e.key === "Enter") saveEdit();
+      else if (e.key === "Escape") editRow.hidden = true;
+    });
+    resetBtn.addEventListener("click", function () { emitCmd({ action: "reset" }); selfHide(); });
+    exitBtn.addEventListener("click", function () { if (TE && TE.emit) TE.emit("app:exit"); });
+  }
 
   // --- render constants (MUST match the server's sim: W/H/colours/spout) ---
   const W = 80, H = 300;     // authoritative grid size (server owns it; H raised 200→300 for a taller bottle)
@@ -690,58 +791,23 @@
   // ---------------------------------------------------------------------------
   // Menu
   // ---------------------------------------------------------------------------
-  // The App window hugs the bottle so it doesn't occlude a ring of desktop around it.
-  // When the menu opens we grow the window to the LEFT (right edge fixed, so the bottle
-  // never jumps) to make room for the menu, which sits BESIDE the bottle, not over it.
-  // The grown size is MEASURED from the menu's real dimensions, so it's never clipped no
-  // matter how many players the ranking holds; we shrink back on close. Browser / no-Tauri:
-  // this no-ops and the menu just overlays beside the bottle.
-  const WIN_COLLAPSED = { w: 176, h: 564 };
-  const WORKBENCH_PAD = 8;    // .workbench padding (each side)
-  const BOTTLE_W      = 160;  // canvas / bottle column width
-  const MENU_GAP      = 12;   // gap between menu and bottle (matches .menu right offset)
-  let winBusy = false;
-  // Logical window size needed to show the menu fully: pad + menu + gap + bottle + pad
-  // wide, and tall enough for whichever of {menu, collapsed body} is taller.
-  function targetWinSize(open) {
-    if (!open) return WIN_COLLAPSED;
-    const menuW = menu.offsetWidth  || 230;
-    const menuH = menu.offsetHeight || 0;
-    return {
-      w: Math.max(WIN_COLLAPSED.w, Math.ceil(WORKBENCH_PAD + menuW + MENU_GAP + BOTTLE_W + WORKBENCH_PAD)),
-      h: Math.max(WIN_COLLAPSED.h, Math.ceil(WORKBENCH_PAD + menuH + WORKBENCH_PAD)),
-    };
-  }
-  async function fitWindow(open) {
-    if (!appWindow || !TW || !TW.LogicalSize || !TW.PhysicalPosition || winBusy) return;
-    winBusy = true;
-    try {
-      const t = targetWinSize(open);
-      const f = await appWindow.scaleFactor();
-      const pos = await appWindow.outerPosition();   // physical
-      const size = await appWindow.outerSize();       // physical
-      const right = pos.x + size.width;               // keep this edge fixed
-      // the window is user-non-resizable (resizable:false); briefly allow programmatic
-      // resize so the menu can still grow the window, then lock it again.
-      if (appWindow.setResizable) await appWindow.setResizable(true);
-      await appWindow.setSize(new TW.LogicalSize(t.w, t.h));
-      await appWindow.setPosition(new TW.PhysicalPosition(right - Math.round(t.w * f), pos.y));
-      if (appWindow.setResizable) await appWindow.setResizable(false);
-    } catch (_) {} finally { winBusy = false; }
-  }
-  function setMenu(open) { menu.hidden = !open; if (open) updateChrome(); fitWindow(open); }
-  function closeMenu() { setMenu(false); }
+  // The bar's ≡ no longer drops an inline panel (it was clipped by this tiny window).
+  // In the shell it opens a SEPARATE, frameless popover window (label "menu", declared in
+  // tauri.conf, positioned + shown by Rust beside the bottle on this 'menu:open' event);
+  // that window renders the menu and sends actions back as 'menu:cmd' (handled below). In
+  // a plain browser there's no shell, so ≡ falls back to toggling the inline panel for dev.
   menuBtn.addEventListener("click", function (e) {
     e.stopPropagation();
-    setMenu(menu.hidden);
+    if (TE && TE.emit) { TE.emit("menu:open"); return; }              // shell: open popover window
+    menu.hidden = !menu.hidden; if (!menu.hidden) updateChrome();     // browser: inline fallback
   });
   document.addEventListener("click", function (e) {
-    if (!menu.hidden && !menu.contains(e.target) && e.target !== menuBtn) closeMenu();
+    if (!appWindow && !menu.hidden && !menu.contains(e.target) && e.target !== menuBtn) menu.hidden = true;
   });
   resetBtn.addEventListener("click", function () {
-    // server-authoritative: ask the server to empty the room's canvas
+    // server-authoritative: ask the server to empty the room's canvas (browser inline path)
     if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: "reset" }));
-    closeMenu();
+    menu.hidden = true;
   });
   exitBtn.addEventListener("click", function () {
     if (appWindow) appWindow.close(); else window.close();
@@ -1031,6 +1097,37 @@
     document.body.appendChild(bar);
   }
 
+  // --- bridge to the menu popover window (separate #menu window) ---
+  // We own the room + WS, so the popover sends us intents ('menu:cmd') and we act;
+  // we push it the live roster ('menu:state') on request and on a light timer.
+  function menuStatePayload() {
+    const list = [];
+    for (const id in players) {
+      const u = players[id];
+      list.push({ name: u.name, css: u.css, count: u.count || 0, you: !!u.you });
+    }
+    list.sort(function (a, b) { return b.count - a.count; });
+    return { players: list, buried: buriedCount(), room: roomId, link: shareLink() };
+  }
+  function startMenuBridge() {
+    if (!TE) return;                       // browser dev has no shell event bus
+    const push = function () { if (TE.emit) TE.emit("menu:state", menuStatePayload()); };
+    if (TE.listen) {
+      TE.listen("menu:request", push);     // popover just opened → send current state
+      TE.listen("menu:cmd", function (e) {
+        const d = (e && e.payload) || {};
+        switch (d.action) {
+          case "newRoom":  newRoom(); break;
+          case "join":     if (d.room) switchRoom(d.room); break;
+          case "setName":  if (d.name) { playerName = d.name; localStorage.setItem("titb.name", playerName); reconnect(); } break;
+          case "reset":    if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: "reset" })); break;
+        }
+        push();                            // reflect the change back immediately
+      });
+    }
+    setInterval(push, 700);                // keep the ranking live while it's open (cheap)
+  }
+
   // --- init ---
   buildPalette();
   updateRoomLabel();
@@ -1039,6 +1136,7 @@
   connect();
   startPerf();
   startDebug();
+  startMenuBridge();
 })();
 </script>
 </body>

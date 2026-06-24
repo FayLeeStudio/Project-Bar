@@ -23,6 +23,20 @@
         "alwaysOnTop": true,
         "shadow": false,
         "skipTaskbar": true
+      },
+      {
+        "label": "menu",
+        "title": "Sand Together — Menu",
+        "url": "https://sandtogether.indiegames.design/#menu",
+        "width": 260,
+        "height": 480,
+        "visible": false,
+        "resizable": false,
+        "transparent": true,
+        "decorations": false,
+        "alwaysOnTop": true,
+        "shadow": false,
+        "skipTaskbar": true
       }
     ],
     "security": {
