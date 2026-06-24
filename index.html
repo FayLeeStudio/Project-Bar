@@ -114,23 +114,28 @@
     background: rgba(255,255,255,.28);
   }
 
-  .surface-btn {
+  /* Navigation bars: thin pills pinned to the top (back to surface) and bottom
+     (dig down into history) edges of the bottle. They fade in when you hover the
+     bottle, and each only exists when that direction is actually reachable. */
+  .nav-btn {
     position: absolute;
-    top: 10px; left: 50%;
-    transform: translateX(-50%);
-    font-family: inherit;
-    font-size: 10px;
-    letter-spacing: .14em;
-    text-transform: uppercase;
+    left: 14px; right: 14px;
+    height: 20px;
+    display: flex; align-items: center; justify-content: center;
+    font-family: inherit; font-size: 9.5px; letter-spacing: .16em; text-transform: uppercase;
     color: #161619;
     background: var(--color-accent);
-    border: none;
-    border-radius: 20px;
-    padding: 7px 15px;
+    border: none; border-radius: 10px;
     cursor: pointer;
     box-shadow: 0 2px 8px rgba(0,0,0,.35);
+    opacity: 0; transition: opacity .14s;
+    pointer-events: none;            /* invisible + inert until the bottle is hovered */
   }
-  .surface-btn[hidden] { display: none; }
+  .bottle-wrap:hover .nav-btn { opacity: .92; pointer-events: auto; }
+  .nav-btn:hover { opacity: 1; }
+  .nav-btn[hidden] { display: none; }
+  .nav-top { top: 8px; }
+  .nav-bot { bottom: 8px; }
 
   /* ---- top bar (drag handle: moves the window) ----------------------- */
   .bar {
@@ -310,7 +315,8 @@
       <div class="bottle-wrap">
         <canvas id="bottle" width="160" height="500" data-no-drag aria-label="瓶子"></canvas>
         <div class="scrollbar"><div class="thumb" id="thumb"></div></div>
-        <button class="surface-btn" id="surfaceBtn" data-no-drag hidden>↑ back to surface</button>
+        <button class="nav-btn nav-top" id="surfaceBtn" data-no-drag hidden>↑ back to surface</button>
+        <button class="nav-btn nav-bot" id="peekBtn" data-no-drag hidden>↓ dig into history</button>
       </div>
 
     </div>
@@ -332,6 +338,7 @@
   const canvas     = $("bottle");
   const thumbEl    = $("thumb");
   const surfaceBtn = $("surfaceBtn");
+  const peekBtn    = $("peekBtn");
   const menuBtn    = $("menuBtn");
   const menu       = $("menu");
   const resetBtn   = $("resetBtn");
@@ -475,7 +482,7 @@
   // (0.30 → surface ~30% down, so sand fills the lower ~70% and the spout rides near the
   // top, close to the bar). Lower CAMERA_ANCHOR pushes the surface + spout higher.
   const SPAWN_GAP = 16;      // source rides this far above the surface (matches server)
-  const CAMERA_ANCHOR = 0.30; // pin the settled surface this far down the view
+  const CAMERA_ANCHOR = 0.15; // pin the settled surface this far down the view (small → spout hugs the top bar, almost no sky above; sand fills the lower ~85%)
   const SPOUT_X = { 1: 30, 2: 50, 3: 10, 4: 70 }; // evenly spaced across W=80, centre-out (must match server)
 
   // --- authoritative grid (mirror of the server's), updated by snapshot/patch ---
@@ -505,6 +512,7 @@
   }
   let cameraY = H - viewRows; // world row at the top of the viewport (float)
   let follow = true;
+  let camTarget = null;       // when not following + not dragging, ease toward this (peek button)
   let drag = null;
   let frame = 0;
 
@@ -689,9 +697,16 @@
   }
   function gridGrains() { let n = 0; for (let i = 0; i < grid.length; i++) if (grid[i]) n++; return n; }
   function buriedCount() { let n = gridGrains(); for (let i = 0; i < bands.length; i++) n += bands[i].n; return n; } // active + archived
+  // Show each nav bar only when that direction is reachable: "back to surface" once
+  // you've left the surface, "dig" while there's still archive/well below the view.
+  function updateNav() {
+    const atTop = follow || cameraY <= followTarget() + 2;
+    const atBot = cameraY >= maxCameraY() - 2;
+    if (surfaceBtn.hidden !== atTop) surfaceBtn.hidden = atTop;
+    if (peekBtn.hidden !== atBot) peekBtn.hidden = atBot;
+  }
   function updateChrome() {
     barCount.textContent = myCount.toLocaleString();
-    surfaceBtn.hidden = follow;
     if (menu.hidden) return;
     let max = 1;
     for (const id in players) if (players[id].count > max) max = players[id].count;
@@ -723,8 +738,12 @@
     if (follow) {
       cameraY += (ft - cameraY) * 0.16;
       if (Math.abs(ft - cameraY) < 0.05) cameraY = ft;
+    } else if (camTarget !== null && !drag) {   // smooth glide to the peek-button target
+      cameraY += (camTarget - cameraY) * 0.2;
+      if (Math.abs(camTarget - cameraY) < 0.5) { cameraY = camTarget; camTarget = null; }
     }
     cameraY = Math.min(maxCameraY(), Math.max(camLo(), cameraY));
+    updateNav();
     if (PERF) { const t = performance.now(); draw(); perf.drawMs += performance.now() - t; perf.frames++; }
     else draw();
     if (frame % 12 === 0) updateChrome();
@@ -767,6 +786,7 @@
     e.stopPropagation();
     drag = { y: e.clientY };
     follow = false;
+    camTarget = null;          // drag overrides any in-flight peek glide
     canvas.classList.add("grabbing");
   });
   window.addEventListener("pointermove", function (e) {
@@ -786,7 +806,13 @@
     canvas.classList.remove("grabbing");
     if (cameraY <= followTarget() + 12) follow = true;
   });
-  surfaceBtn.addEventListener("click", function () { follow = true; });
+  surfaceBtn.addEventListener("click", function (e) { e.stopPropagation(); follow = true; camTarget = null; });
+  // Dig down a page per click (replaces drag for desktop); repeat to go deeper.
+  peekBtn.addEventListener("click", function (e) {
+    e.stopPropagation();
+    follow = false;
+    camTarget = Math.min(maxCameraY(), Math.round(cameraY) + Math.round(viewRows * 0.7));
+  });
 
   // Only the BAR is a window-drag handle now — the transparent margins around the
   // bottle no longer grab/drag the window (they're inert). Clicking the ≡ button
