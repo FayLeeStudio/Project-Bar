@@ -86,6 +86,7 @@ const FLOOD_ROWS_PER_TICK = 6; // debug {type:"flood"}: directly fill this many 
 // much. Bands stack below the active grid; the client renders them as thin strips.
 const COMPRESS_ROWS   = numEnv("SAND_COMPRESS_ROWS", 64);   // rows folded into one band
 const COMPRESS_MARGIN = numEnv("SAND_COMPRESS_MARGIN", 40); // trigger when the surface reaches this near row 0
+const CHECKSUM_LOG    = numEnv("SAND_CHECKSUM_LOG", 0);     // >0: log a grid checksum every N ticks (divergence watch; off in prod)
 
 const colorSlot = (c) => Math.max(1, ROOM_COLORS.indexOf(c) + 1);
 // A band archives COMPRESS_ROWS real rows LOSSLESSLY: `cells` = rows*W bytes (the exact
@@ -146,7 +147,7 @@ class PlayerStore {
 const playerStore = new PlayerStore();
 
 class Room {
-  constructor(id) {
+  constructor(id, opts = {}) {
     this.id = id;
     this.grid = new Uint8Array(W * H);
     this.prev = new Uint8Array(W * H); // last-broadcast grid, for diffing patches
@@ -159,11 +160,15 @@ class Room {
     this.pouring = {};                 // playerId -> bool (debug: keep the spout saturated)
     this.conns = new Map();            // ws -> playerId
     this.frame = 0;
+    // Seeded PRNG state (mulberry32) — the CA's ONLY randomness (fall()'s left/right
+    // slide) is drawn from here, so the grid is a pure function of (rngState + inputs).
+    // Persisted with the world so a restart resumes the same deterministic stream.
+    this.rngState = crypto.randomBytes(4).readUInt32LE(0);
     this.dirty = false;                // grid/players changed since last save
     this.timer = null;
     this.saveTimer = null;
-    this.load();
-    this.ensureRunning();
+    if (!opts.noLoad) this.load();          // opts.noLoad/noAutoRun: headless construction (tests)
+    if (!opts.noAutoRun) this.ensureRunning();
   }
 
   ensureRunning() {
@@ -198,6 +203,7 @@ class Room {
     if (!d) { try { d = JSON.parse(fs.readFileSync(path.join(DATA_DIR, this.safeId() + ".json"), "utf8")); } catch (_) {} }
     if (!d) return; // fresh room
     if (d.createdAt) this.createdAt = d.createdAt;
+    if (typeof d.rng === "number") this.rngState = d.rng >>> 0; // resume the deterministic stream
     if (d.grid) { const buf = Buffer.from(d.grid, "base64"); this.grid.set(buf.subarray(0, W * H)); }
     if (Array.isArray(d.bands)) this.bands = d.bands.map((b) => { const rows = b.rows | 0; return { rows, n: b.n | 0, cells: b64dec(b.cells, rows * W) }; });
     if (d.members && typeof d.members === "object") {
@@ -216,7 +222,7 @@ class Room {
   save() {
     if (!this.dirty) return;
     this.dirty = false;
-    const data = { id: this.id, createdAt: this.createdAt, members: this.members, grid: Buffer.from(this.grid).toString("base64"), bands: this.serializeBands() };
+    const data = { id: this.id, createdAt: this.createdAt, rng: this.rngState, members: this.members, grid: Buffer.from(this.grid).toString("base64"), bands: this.serializeBands() };
     fs.writeFile(this.file(), JSON.stringify(data), () => {});
   }
 
@@ -307,7 +313,7 @@ class Room {
   }
   spawn() {
     const sr = Math.max(SPAWN_ROW, this.surface() - SPAWN_GAP); // source rides just above the peak
-    for (const id in this.members) {
+    for (const id of Object.keys(this.members).sort()) { // sorted = deterministic multi-player order (lockstep contract)
       const slot = colorSlot(this.members[id].color);
       const x0 = SPOUT_X[slot] || 40;
       const N = this.spoutSize[id] || DEFAULT_SPOUT;
@@ -320,7 +326,7 @@ class Room {
   // debug fast-fill: directly pack the lowest empty cells with the player's colour (no
   // pour/physics), so testing the archive doesn't require minutes of typing.
   floodFill() {
-    for (const id in this.flooding) {
+    for (const id of Object.keys(this.flooding).sort()) {
       if (!this.flooding[id] || !this.members[id]) continue;
       const slot = colorSlot(this.members[id].color);
       let budget = FLOOD_ROWS_PER_TICK * W;
@@ -344,9 +350,26 @@ class Room {
     if (g[below] === 0) { g[below] = c; g[i] = 0; return; }
     const dl = x > 0 && g[below - 1] === 0;
     const dr = x < W - 1 && g[below + 1] === 0;
-    if (dl && dr) { if (Math.random() < 0.5) g[below - 1] = c; else g[below + 1] = c; g[i] = 0; }
+    if (dl && dr) { if ((this.nextU32() & 1) === 0) g[below - 1] = c; else g[below + 1] = c; g[i] = 0; }
     else if (dl) { g[below - 1] = c; g[i] = 0; }
     else if (dr) { g[below + 1] = c; g[i] = 0; }
+  }
+
+  // mulberry32 step: integer-only PRNG (deterministic across JS engines — no float, no
+  // Math.random). Advances rngState, returns a uint32. The CA draws it ONLY in fall(),
+  // in a fixed scan order, so the random stream is reproducible.
+  nextU32() {
+    let t = (this.rngState = (this.rngState + 0x6D2B79F5) >>> 0);
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return (t ^ (t >>> 14)) >>> 0;
+  }
+  // FNV-1a over the grid bytes — a cheap divergence detector. Two nodes running the same
+  // seeded sim on the same ordered inputs MUST agree here on every tick.
+  checksum() {
+    let h = 0x811c9dc5; const g = this.grid;
+    for (let i = 0; i < g.length; i++) { h ^= g[i]; h = Math.imul(h, 0x01000193); }
+    return h >>> 0;
   }
 
   // ---- Stage 3: move the bottom into the archive, free room at the top ----
@@ -381,6 +404,7 @@ class Room {
     // then apply the same shift on the `band` message. Trigger on a packed layer
     // (not the falling curtain) so we only fold a genuinely full bottom.
     if (H > COMPRESS_ROWS && this.packedTop() <= COMPRESS_MARGIN) this.archiveBottom();
+    if (CHECKSUM_LOG && this.frame % CHECKSUM_LOG === 0) console.log(`[sand] ${this.id} f${this.frame} chk ${this.checksum().toString(16)}`);
   }
   // Synthesize the wire roster from world members (color/ticks) + global profiles (name),
   // back into the old { id:{name,color,ticks} } shape — so the wire protocol is UNCHANGED
@@ -462,4 +486,9 @@ wss.on("connection", (ws, req) => {
   ws.on("close", () => room.drop(ws));
   ws.on("error", () => room.drop(ws));
 });
-server.listen(PORT, () => console.log(`[sand] authoritative server on :${PORT}`));
+if (require.main === module) {
+  server.listen(PORT, () => console.log(`[sand] authoritative server on :${PORT}`));
+}
+
+// Exported for headless tests (determinism.test.mjs): import Room without opening a port.
+module.exports = { Room, getRoom, rooms, playerStore };

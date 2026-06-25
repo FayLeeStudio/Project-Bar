@@ -8,7 +8,9 @@
     "dev": "tauri dev",
     "build": "tauri build",
     "server": "node server/index.js",
-    "migrate": "node server/migrate.mjs"
+    "migrate": "node server/migrate.mjs",
+    "test:determinism": "node server/determinism.test.mjs",
+    "test:bands": "node server/smoke-bands.mjs"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2",
