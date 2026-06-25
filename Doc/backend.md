@@ -156,6 +156,8 @@ profile  : { id, name, createdAt, lastSeen, skills:{}, lifetime:{ticks}, worlds:
 
 > **体积优化（暂未做，第二步）**：当前 band 存原始像素未压缩（`rows*W` 字节/条），归档随历史线性增长。后续加 RLE/gzip（沉积沙极易压）把它压小；超深历史再加二级压缩。当前第一步只保证**完整无损可记录、可下滑回看**。
 
+> **测试**：`node server/smoke-bands.mjs`（用 env 起一个调小的快房间，灌输入到触发归档，断言 band 生成 / `cells`=`rows*W` 无损 / 网格下移 / 继续接沙 / 重启从盘恢复）。
+
 ---
 
 ## 持久化（两套存档，均 gitignored 于 `server/data/`）
