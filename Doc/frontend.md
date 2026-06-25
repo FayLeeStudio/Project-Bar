@@ -123,9 +123,9 @@ font-family: 'JetBrains Mono', ui-monospace, monospace;
 
 - 背景色：`--color-well-bg`，`image-rendering: pixelated`，2px 方形像素颗粒（`S=2`）
 - 右侧贴 4px 自定义滚动条：轨 `--color-scrollbar-track`，滑块 `--color-scrollbar-thumb`
-- 导航（**按钮优先**，桌面端手感更稳）：悬停瓶子时浮出两个细条按钮——**顶部 `↑ 地表`**（回到实时表面）、**底部 `↓ 更早`**（向下跳约一屏、挖更早的沉积）；不悬停时隐藏。仍保留鼠标按住**向上拖**自由滚动作为辅助（光标 `grab` → `grabbing`）
-- 到顶 / 到底**硬停**：相机钳制在 `[followTarget, maxCameraY]`——跳/拖到最深历史即停，不再出现"假死区"继续滑出空白；`↑ 地表` 只在离开表面时出现，`↓ 更早` 只在下方还有更深历史时出现
-- 计数显示在瓶子下方的 bar 上；`≡` 菜单点开为**独立弹出窗口**（不是内嵌下拉——窄至 160px 的叠加层里内嵌下拉会被裁切/遮挡瓶子）
+- 导航（**按钮优先**，桌面端手感更稳）：悬停瓶子时浮出两个细条按钮（**白底**深色字——比强调色在沙面上更清晰）——**顶部 `↑ 回到地表`**（回到实时表面）、**底部 `↓ 查看历史`**（向下跳约一屏、挖更早的沉积）；不悬停时隐藏。仍保留鼠标按住**向上拖**自由滚动作为辅助（光标 `grab` → `grabbing`）
+- 到顶 / 到底**硬停**：相机钳制在 `[followTarget, maxCameraY]`——跳/拖到最深历史即停，不再出现"假死区"继续滑出空白；`↑ 回到地表` 只在离开表面时出现，`↓ 查看历史` 只在下方还有更深历史时出现
+- 计数显示在瓶子下方的 bar 上；`≡` 菜单点开为**独立弹出窗口**（不是内嵌下拉——窄至 160px 的叠加层里内嵌下拉会被裁切/遮挡瓶子），见下「菜单弹窗」
 
 ### 用户排行栏（who's pouring）
 
@@ -137,7 +137,22 @@ font-family: 'JetBrains Mono', ui-monospace, monospace;
 
 - `N grains recorded below`：浅色信息条，提示已沉积颗粒数
 - 提示卡（深色）：`type anywhere to pour amber▮`，琥珀光标 `blink` 动画 1.1s
-- `empty the bottle`：幽灵按钮（透明底 + `--color-card-border` 描边），hover 变 `--color-divider` 底
+
+### 菜单弹窗（≡）
+
+`≡` 是一个**独立的、无边框透明 Tauri 窗口**（label `menu`，加载远程 `#menu` 页），由 Rust 贴在瓶子左侧定位/显隐；它**不持有任何游戏状态**——主窗经 `menu:state` 事件把名单/房间/buried/perf 推过来渲染，用户操作经 `menu:cmd` 回传，主窗持有 WS 并执行（服务端权威不变）。
+
+- **开关式（toggle）**：点 `≡` 展开、再点 `≡` 收起；**不再失焦自动收起**——展开后可以拖瓶子、点别处而菜单保持打开，只有再点 `≡` 才关。
+- **联动移动**：拖动主窗（瓶子）时，菜单作为子对象**跟随移动**（Rust 监听主窗 `Moved` → 重新定位）。
+- **高度自适应**：窗口高度跟随内容（菜单窗 JS 测内容高 → `setSize`，双 `rAF` 等布局 settle）；内容多高窗口多高，`exit` 永不被裁。⚠️ 这需要 `menu` 能力授予 `core:window:allow-set-size`（否则 `setSize` 被 Tauri 权限静默拒绝、窗口卡死、展开内容被切——见 `architecture.md`）。
+- **结构（自上而下）**：排行（who's pouring）→ buried 计数 → 房间区（new/join/copy/nickname）→ `exit` → **debug 区（仅开发构建）**。
+
+### debug 区（仅开发构建）
+
+- 仅当主窗以 `?debug`/`#…&debug` 运行时出现；**开发构建（`npm run dev`）自动开启**（Rust `cfg!(debug_assertions)` 给主窗 URL 拼 `&debug`），**正式构建（`npm run build`）干净无此区**。
+- 一个**折叠 Switch**（默认收起，保持菜单短）：展开后才显示填沙工具 + perf 面板，收起则全隐藏、菜单变短。
+- 填沙工具（经 `menu:cmd` → 主窗 → WS 的 `spout`/`pour`/`flood`，**服务端已支持，无新协议**）：`spout 1–5` 笔刷、`💧 pour`（持续出沙看笔刷）、`⏬ flood-fill`（从底部快速灌满，测存档/镜头）、`empty the bottle`（清空瓶子，已从菜单外层移入此处）。
+- **perf 面板**：FPS / draw ms / patch/s / parse+apply / rtt / grains / bands。原来浮在 canvas 左下角会遮挡底部按钮，**已搬进此面板**（主窗每秒采样 → `menu:state` 推送显示）。
 
 ---
 
