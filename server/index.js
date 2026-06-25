@@ -26,6 +26,7 @@
 //     { type:"snapshot", w, h, players, grid:<base64>, bands:[...] }  // full state on join
 //     { type:"patch",  c:[idx,val, idx,val, ...] }         // changed cells
 //     { type:"band",   rows, n, cells:<base64 rows*W bytes> } // Stage 3: a new archived layer (lossless)
+//     { type:"frame",  tick, events:[{op,...},...] }       // lockstep: ordered per-tick event log (OFF unless SAND_EMIT_FRAMES)
 //     { type:"players", players }                          // roster change
 //     { type:"error",  reason:"room_full" }
 //     { type:"pong",   t }                                 // echo of ping t (RTT)
@@ -74,6 +75,7 @@ const FLOOD_ROWS_PER_TICK = 6;                             // debug {type:"flood
 const COMPRESS_ROWS   = numEnv("SAND_COMPRESS_ROWS", 64);   // Stage 3: rows folded into one band
 const COMPRESS_MARGIN = numEnv("SAND_COMPRESS_MARGIN", 40); // Stage 3: trigger when a packed layer reaches this near row 0
 const CHECKSUM_LOG    = numEnv("SAND_CHECKSUM_LOG", 0);     // >0: log a grid checksum every N ticks (divergence watch; off in prod)
+const EMIT_FRAMES     = !!process.env.SAND_EMIT_FRAMES;     // emit the lockstep `frame` event log each tick (OFF in prod → zero wire change; on for replay.test + Phase 2)
 // What the sim needs to construct a room. Bundled so every Room (and headless tests) builds
 // the same shape; a fresh room gets a crypto seed (load() overrides for an existing world).
 const simConfig = () => ({ H, COMPRESS_ROWS, COMPRESS_MARGIN, FLOOD_ROWS_PER_TICK, DEFAULT_SPOUT, rngState: crypto.randomBytes(4).readUInt32LE(0) });
@@ -147,6 +149,7 @@ class Room {
     this.createdAt = Date.now();       // world birth (load() overrides for existing worlds)
     this.members = {};                 // playerId -> { color, ticks, contributionTicks, joinedAt } (name lives on the global profile)
     this.conns = new Map();            // ws -> playerId
+    this.pendingEvents = [];           // sim-affecting events this tick → broadcast as a `frame` (lockstep)
     this.dirty = false;                // grid/players changed since last save
     this.timer = null;
     this.saveTimer = null;
@@ -213,6 +216,12 @@ class Room {
   // roster (this.sim.members) in one place, so they never drift apart.
   addMemberLocal(id, color, extra) { this.members[id] = Object.assign({ color }, extra || {}); this.sim.addMember(id, color); }
 
+  // Record a sim-affecting event for this tick's `frame` log (lockstep). Only when
+  // SAND_EMIT_FRAMES is on (off in prod → zero overhead, no wire change). Payload is
+  // counts/colours/sizes/bools only — never key contents. The deterministic frame stream
+  // lets a client running ../sim.js reproduce the grid from input alone.
+  recordEvent(ev) { if (EMIT_FRAMES) this.pendingEvents.push(ev); }
+
   // ---- connection lifecycle ----
   join(ws, playerId, name) {
     // Reject a full room BEFORE creating any profile/member (don't leave a profile behind
@@ -223,7 +232,9 @@ class Room {
     }
     playerStore.touch(playerId, name);     // global profile: identity/name/lastSeen
     if (!this.members[playerId]) {
-      this.addMemberLocal(playerId, this.takeColor(), { ticks: 0, contributionTicks: 0, joinedAt: Date.now() });
+      const color = this.takeColor();
+      this.addMemberLocal(playerId, color, { ticks: 0, contributionTicks: 0, joinedAt: Date.now() });
+      this.recordEvent({ op: "join", id: playerId, color });
       this.dirty = true;
     }
     playerStore.addWorld(playerId, this.id); // bidirectional membership: profile ↔ world
@@ -237,27 +248,31 @@ class Room {
     const m = this.members[playerId];
     if (!m) return;
     ticks = Number(ticks) || 0;
-    this.sim.enqueue(playerId, ticks - m.ticks); // delta grains → pour queue (sim caps it)
+    const delta = ticks - m.ticks;
+    this.sim.enqueue(playerId, delta);           // delta grains → pour queue (sim caps it)
+    if (delta > 0) this.recordEvent({ op: "input", id: playerId, delta });
     m.ticks = ticks;
     playerStore.bumpLifetime(playerId, ticks); // global lifetime = high-water mark of the device counter
   }
-  setSpout(playerId, size) { if (this.members[playerId]) this.sim.setSpout(playerId, size); } // pour brush 1..5
-  setFirehose(playerId, on) { if (this.members[playerId]) this.sim.setFlood(playerId, on); }   // debug fast bottom-fill
-  setPour(playerId, on) { if (this.members[playerId]) this.sim.setPour(playerId, on); }        // debug keep spout saturated
+  setSpout(playerId, size) { if (this.members[playerId]) { this.sim.setSpout(playerId, size); this.recordEvent({ op: "spout", id: playerId, size: size | 0 }); } } // pour brush 1..5
+  setFirehose(playerId, on) { if (this.members[playerId]) { this.sim.setFlood(playerId, on); this.recordEvent({ op: "flood", id: playerId, on: !!on }); } } // debug fast bottom-fill
+  setPour(playerId, on) { if (this.members[playerId]) { this.sim.setPour(playerId, on); this.recordEvent({ op: "pour", id: playerId, on: !!on }); } }        // debug keep spout saturated
   leave(playerId) {
     if (!this.members[playerId]) return;
     delete this.members[playerId]; this.sim.removeMember(playerId);
+    this.recordEvent({ op: "leave", id: playerId });
     // NOTE: we keep roomId in the profile's `worlds` — "has joined" is a history record.
     this.dirty = true; this.broadcastPlayers();
   }
   drop(ws) { // keep player (offline ≠ exit), but stop debug pours so they can't run forever
     const pid = this.conns.get(ws);
     this.conns.delete(ws);
-    if (pid) { this.sim.setFlood(pid, false); this.sim.setPour(pid, false); }
+    if (pid) { this.sim.setFlood(pid, false); this.sim.setPour(pid, false); this.recordEvent({ op: "flood", id: pid, on: false }); this.recordEvent({ op: "pour", id: pid, on: false }); }
     this.maybeStop();
   }
   reset() { // empty the room's shared canvas + archive (Stage 1: anyone may; prototype)
     this.sim.reset(); this.prev.fill(0); this.dirty = true;
+    this.recordEvent({ op: "reset" });
     for (const ws of this.conns.keys()) this.snapshotTo(ws);
   }
 
@@ -276,6 +291,10 @@ class Room {
       this.dirty = true;
       this.broadcast({ type: "band", rows: band.rows, n: band.n, cells: b64enc(band.cells) });
     }
+    // Lockstep: broadcast this tick's ordered event log (the events applied since the last
+    // tick, then this step). A client running ../sim.js applies them + steps to reproduce
+    // the grid — patch-free. Tick number lets the client align its local clock. Off in prod.
+    if (EMIT_FRAMES) { this.broadcast({ type: "frame", tick: this.sim.frame, events: this.pendingEvents }); this.pendingEvents = []; }
     if (CHECKSUM_LOG && this.sim.frame % CHECKSUM_LOG === 0) console.log(`[sand] ${this.id} f${this.sim.frame} chk ${this.sim.checksum().toString(16)}`);
   }
   // Synthesize the wire roster from world members (color/ticks) + global profiles (name),

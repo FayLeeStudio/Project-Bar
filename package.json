@@ -10,6 +10,7 @@
     "server": "node server/index.js",
     "migrate": "node server/migrate.mjs",
     "test:determinism": "node server/determinism.test.mjs",
+    "test:replay": "node server/replay.test.mjs",
     "test:bands": "node server/smoke-bands.mjs"
   },
   "devDependencies": {
