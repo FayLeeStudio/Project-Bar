@@ -14,19 +14,20 @@
 //
 // Wire protocol (see also doc/backend.md):
 //   client → server:
-//     { type:"join",  name, color:"auto" }   // color assigned by server
+//     { type:"join",  name, color:"auto", lockstep } // lockstep=true → client runs /sim.js (skip its patches)
 //     { type:"input", ticks }                // cumulative keystroke count → faucet flow
 //     { type:"leave" }                       // explicit exit (frees colour)
 //     { type:"reset" }                       // empty the room's canvas + archive
+//     { type:"resync" }                      // lockstep self-heal: client diverged → send me a fresh snapshot
 //     { type:"spout", size }                 // pour brush size 1..5 (N×N square)
 //     { type:"pour",  on }                   // debug: keep the spout saturated (see the brush)
 //     { type:"flood", on }                   // debug: fast bottom-fill (archive testing)
 //     { type:"ping",  t }                    // RTT probe → pong
 //   server → client:
-//     { type:"snapshot", w, h, players, grid:<base64>, bands:[...] }  // full state on join
-//     { type:"patch",  c:[idx,val, idx,val, ...] }         // changed cells
-//     { type:"band",   rows, n, cells:<base64 rows*W bytes> } // Stage 3: a new archived layer (lossless)
-//     { type:"frame",  tick, events:[{op,...},...] }       // lockstep: ordered per-tick event log (OFF unless SAND_EMIT_FRAMES)
+//     { type:"snapshot", w, h, players, grid, bands, rng, frame, queues, spout, pour, flood, lockstep } // full state on join
+//     { type:"patch",  c:[idx,val, ...] }                  // changed cells (only to non-lockstep conns)
+//     { type:"band",   rows, n, cells:<base64 rows*W bytes> } // Stage 3: a new archived layer (only to non-lockstep conns)
+//     { type:"frame",  tick, events:[{op,...},...], chk? } // lockstep event log (chk = grid hash every CHECKSUM_EVERY ticks)
 //     { type:"players", players }                          // roster change
 //     { type:"error",  reason:"room_full" }
 //     { type:"pong",   t }                                 // echo of ping t (RTT)
@@ -75,7 +76,8 @@ const FLOOD_ROWS_PER_TICK = 6;                             // debug {type:"flood
 const COMPRESS_ROWS   = numEnv("SAND_COMPRESS_ROWS", 64);   // Stage 3: rows folded into one band
 const COMPRESS_MARGIN = numEnv("SAND_COMPRESS_MARGIN", 40); // Stage 3: trigger when a packed layer reaches this near row 0
 const CHECKSUM_LOG    = numEnv("SAND_CHECKSUM_LOG", 0);     // >0: log a grid checksum every N ticks (divergence watch; off in prod)
-const EMIT_FRAMES     = process.env.SAND_EMIT_FRAMES !== "0"; // Phase 2 ACTIVE: emit the lockstep `frame` event log each tick by default (clients run /sim.js locally). Set SAND_EMIT_FRAMES=0 to force the old patch-only path. `patch` is still broadcast too (back-compat for old cached clients); drop it in Phase 3.
+const EMIT_FRAMES     = process.env.SAND_EMIT_FRAMES !== "0"; // Phase 2 ACTIVE: emit the lockstep `frame` event log each tick by default (clients run /sim.js locally). Set SAND_EMIT_FRAMES=0 to force the old patch-only path.
+const CHECKSUM_EVERY  = numEnv("SAND_CHECKSUM_EVERY", 60);    // Phase 3 self-heal: stamp a grid checksum into the frame every N ticks so a client can detect divergence + ask for a fresh snapshot
 // What the sim needs to construct a room. Bundled so every Room (and headless tests) builds
 // the same shape; a fresh room gets a crypto seed (load() overrides for an existing world).
 const simConfig = () => ({ H, COMPRESS_ROWS, COMPRESS_MARGIN, FLOOD_ROWS_PER_TICK, DEFAULT_SPOUT, rngState: crypto.randomBytes(4).readUInt32LE(0) });
@@ -149,6 +151,7 @@ class Room {
     this.createdAt = Date.now();       // world birth (load() overrides for existing worlds)
     this.members = {};                 // playerId -> { color, ticks, contributionTicks, joinedAt } (name lives on the global profile)
     this.conns = new Map();            // ws -> playerId
+    this.patchConns = new Set();       // conns that still want per-cell patches (old / non-lockstep clients)
     this.pendingEvents = [];           // sim-affecting events this tick → broadcast as a `frame` (lockstep)
     this.dirty = false;                // grid/players changed since last save
     this.timer = null;
@@ -223,7 +226,7 @@ class Room {
   recordEvent(ev) { if (EMIT_FRAMES) this.pendingEvents.push(ev); }
 
   // ---- connection lifecycle ----
-  join(ws, playerId, name) {
+  join(ws, playerId, name, lockstepCap) {
     // Reject a full room BEFORE creating any profile/member (don't leave a profile behind
     // for someone who couldn't get in).
     if (!this.members[playerId] && Object.keys(this.members).length >= ROOM_CAP) {
@@ -239,6 +242,7 @@ class Room {
     }
     playerStore.addWorld(playerId, this.id); // bidirectional membership: profile ↔ world
     this.conns.set(ws, playerId);
+    if (!(EMIT_FRAMES && lockstepCap)) this.patchConns.add(ws); // lockstep clients render from /sim.js → no patches; old clients still get them
     this.ensureRunning();
     this.snapshotTo(ws);     // full state to the newcomer
     this.broadcastPlayers(); // everyone learns the roster change
@@ -267,6 +271,7 @@ class Room {
   drop(ws) { // keep player (offline ≠ exit), but stop debug pours so they can't run forever
     const pid = this.conns.get(ws);
     this.conns.delete(ws);
+    this.patchConns.delete(ws);
     if (pid) { this.sim.setFlood(pid, false); this.sim.setPour(pid, false); this.recordEvent({ op: "flood", id: pid, on: false }); this.recordEvent({ op: "pour", id: pid, on: false }); }
     this.maybeStop();
   }
@@ -279,24 +284,35 @@ class Room {
   // ---- loop + broadcast ----
   tick() {
     this.sim.step();
+    // Diff for the patch clients (old / non-lockstep). prev is ALWAYS kept fresh as the
+    // diff baseline (so a later-joining patch client gets correct diffs), but the patch is
+    // only SENT to patchConns — lockstep clients reproduce the grid from the frame log.
     const g = this.sim.grid, pv = this.prev, cells = [];
     for (let i = 0; i < g.length; i++) if (g[i] !== pv[i]) { cells.push(i, g[i]); pv[i] = g[i]; }
-    if (cells.length) { this.dirty = true; this.broadcast({ type: "patch", c: cells }); }
-    // Archive AFTER the patch broadcast so clients reach the pre-shift grid first, then
-    // apply the same shift on the `band` message. maybeArchive() folds a genuinely packed
-    // bottom (not the falling curtain) and returns the new band, or null.
+    if (cells.length) { this.dirty = true; this.sendPatch({ type: "patch", c: cells }); }
+    // Archive AFTER the patch so patch clients reach the pre-shift grid first, then apply
+    // the same shift on `band`. Lockstep clients archive themselves (sim.maybeArchive).
     const band = this.sim.maybeArchive();
     if (band) {
       this.prev.set(this.sim.grid); // diff baseline = post-shift grid (no giant patch)
       this.dirty = true;
-      this.broadcast({ type: "band", rows: band.rows, n: band.n, cells: b64enc(band.cells) });
+      this.sendPatch({ type: "band", rows: band.rows, n: band.n, cells: b64enc(band.cells) });
     }
-    // Lockstep: broadcast this tick's ordered event log (the events applied since the last
-    // tick, then this step). A client running ../sim.js applies them + steps to reproduce
-    // the grid — patch-free. Tick number lets the client align its local clock. Off in prod.
-    if (EMIT_FRAMES) { this.broadcast({ type: "frame", tick: this.sim.frame, events: this.pendingEvents }); this.pendingEvents = []; }
+    // Lockstep: broadcast this tick's ordered event log to ALL conns (old clients ignore
+    // the unknown type). Every CHECKSUM_EVERY ticks stamp the grid hash so clients can
+    // self-heal (detect divergence → ask for a fresh snapshot).
+    if (EMIT_FRAMES) {
+      const f = { type: "frame", tick: this.sim.frame, events: this.pendingEvents };
+      if (this.sim.frame % CHECKSUM_EVERY === 0) f.chk = this.sim.checksum();
+      this.broadcast(f);
+      this.pendingEvents = [];
+    }
     if (CHECKSUM_LOG && this.sim.frame % CHECKSUM_LOG === 0) console.log(`[sand] ${this.id} f${this.sim.frame} chk ${this.sim.checksum().toString(16)}`);
   }
+  // patch / band go ONLY to non-lockstep conns (lockstep clients run /sim.js locally and
+  // archive themselves). With frames off, ALL conns are patch conns (old behaviour).
+  sendPatch(msg) { if (!this.patchConns.size) return; const s = JSON.stringify(msg); for (const ws of this.patchConns) { try { ws.send(s); } catch (_) {} } }
+  resyncTo(ws) { if (this.conns.has(ws)) this.snapshotTo(ws); } // client detected divergence → re-seed it with the authoritative state
   // Synthesize the wire roster from world members (color/ticks) + global profiles (name),
   // back into the old { id:{name,color,ticks} } shape — so the wire protocol is UNCHANGED
   // and the client needs no edits despite the player/world save split.
@@ -383,8 +399,9 @@ wss.on("connection", (ws, req) => {
   const room = getRoom(roomId);
   ws.on("message", (raw) => {
     let d; try { d = JSON.parse(raw.toString()); } catch (_) { return; }
-    if (d.type === "join") room.join(ws, playerId, d.name);
+    if (d.type === "join") room.join(ws, playerId, d.name, d.lockstep); // d.lockstep: client runs /sim.js → skip its patches
     else if (d.type === "input") room.onInput(playerId, d.ticks);
+    else if (d.type === "resync") room.resyncTo(ws);                    // lockstep self-heal: client asks for a fresh snapshot
     else if (d.type === "leave") room.leave(playerId);
     else if (d.type === "reset") room.reset();
     else if (d.type === "spout") room.setSpout(playerId, d.size);  // pour brush size 1..5

@@ -13,6 +13,8 @@
     "test:replay": "node server/replay.test.mjs",
     "test:predict": "node server/predict.test.mjs",
     "test:lockstep": "node server/lockstep.test.mjs",
+    "test:heal": "node server/heal.test.mjs",
+    "test:route": "node server/patch-route.test.mjs",
     "test:bands": "node server/smoke-bands.mjs"
   },
   "devDependencies": {

@@ -1161,6 +1161,7 @@
     const band = authSim.maybeArchive();
     if (band) { bands = authSim.bands; rebuildArchive(); smSurface += band.rows; cameraY = Math.min(maxCameraY(), cameraY + band.rows); }
     renderDirty = true; // authSim moved → the prediction must be recomputed next frame
+    if (f.chk !== undefined && (authSim.checksum() >>> 0) !== (f.chk >>> 0)) requestResync(); // diverged from the server → re-seed
   }
   function driveLockstep() { while (frameBuf.length > FRAME_BUFFER) stepAuth(frameBuf.shift()); }
 
@@ -1198,6 +1199,16 @@
     for (let i = 0; i < PREDICT_LEAD; i++) r.step();
     grid = r.grid; bands = r.bands;
   }
+  // Self-heal (Phase 3): a `frame`'s periodic checksum didn't match our authSim → we've
+  // diverged from the server (a bug or a missed event). Ask for a fresh snapshot, which
+  // rebuilds authSim. Cooldown so a persistent mismatch can't storm the server.
+  let resyncAt = 0;
+  function requestResync() {
+    const now = (typeof performance !== "undefined" && performance.now) ? performance.now() : Date.now();
+    if (now - resyncAt < 4000) return;
+    resyncAt = now;
+    if (ws && ws.readyState === WebSocket.OPEN) { try { ws.send(JSON.stringify({ type: "resync" })); } catch (_) {} }
+  }
 
   let ws = null, reconnectTimer = null, roomFull = false;
   function setLive(ok) { if (liveDot) liveDot.classList.toggle("off", !ok); }
@@ -1207,7 +1218,7 @@
   }
   function sendJoin() {
     if (ws && ws.readyState === WebSocket.OPEN) {
-      ws.send(JSON.stringify({ type: "join", name: playerName, color: "auto" }));
+      ws.send(JSON.stringify({ type: "join", name: playerName, color: "auto", lockstep: LOCKSTEP })); // lockstep → server skips our patches
       pendingTicks = myCount;
     }
   }
