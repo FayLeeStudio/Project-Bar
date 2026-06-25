@@ -250,6 +250,20 @@
     padding: 0 12px; cursor: pointer;
   }
 
+  /* ---- debug section (only shown when the App runs with ?debug=1) ----- */
+  .menu-debug[hidden] { display: none; }
+  .menu-debug { display: flex; flex-direction: column; gap: 2px; }
+  .menu-brush { display: flex; align-items: center; gap: 4px; padding: 2px 0 4px; }
+  .menu-brush-tag { font-size: 10.5px; color: var(--chrome-weak); margin-right: 2px; }
+  .menu-brush button {
+    flex: none; width: 22px; height: 22px;
+    font-family: inherit; font-size: 11px;
+    color: var(--color-accent); background: rgba(255,255,255,.06);
+    border: 1px solid rgba(127,255,212,.45); border-radius: 5px; cursor: pointer;
+  }
+  .menu-brush button.on { color: #0a0a0a; background: var(--color-accent); }
+  .menu-item.on { color: #0a0a0a; background: var(--color-accent); }
+
   /* ---- standalone menu popover window (#menu) ------------------------ */
   /* This page is loaded a SECOND time in its own frameless, transparent Tauri
      window; there it shows only the menu, filling the window as a floating panel. */
@@ -306,6 +320,14 @@
           <button id="editSave">ok</button>
         </div>
 
+        <div class="menu-sep" id="debugSep" hidden></div>
+        <div class="menu-debug" id="debugRow" hidden>
+          <div class="menu-label">debug · fill</div>
+          <div class="menu-brush" id="brushRow"><span class="menu-brush-tag">spout</span></div>
+          <button class="menu-item" id="pourBtn">💧 pour continuously</button>
+          <button class="menu-item" id="floodBtn">⏬ flood-fill (archive test)</button>
+        </div>
+
         <div class="menu-sep"></div>
         <button class="menu-item" id="resetBtn">empty the bottle</button>
         <button class="menu-item danger" id="exitBtn">exit</button>
@@ -355,6 +377,11 @@
   const editRow    = $("editRow");
   const editInput  = $("editInput");
   const editSave   = $("editSave");
+  const debugSep   = $("debugSep");
+  const debugRow   = $("debugRow");
+  const brushRow   = $("brushRow");
+  const pourBtn    = $("pourBtn");
+  const floodBtn   = $("floodBtn");
 
   // Tauri APIs exist only inside the shell. The shell feeds a global input COUNT
   // via the 'keycount' event (counting happens only in Rust — CLAUDE.md §3); the
@@ -371,6 +398,9 @@
   // ?debug=1 turns on testing aids (flood button below) AND the perf HUD; ?perf=1 is the HUD alone.
   const DEBUG = params.has("debug") || /(^|[#&])debug/.test(location.hash);
   const PERF = DEBUG || params.has("perf") || /(^|[#&])perf/.test(location.hash);
+  // Live debug-fill state owned by the App window; mirrored to the menu popover
+  // (menu:state) so its toggles read right, and applied to the WS as flood/pour/spout.
+  const dbg = { flood: false, pour: false, spout: 1 };
   const perf = PERF ? { frames: 0, patches: 0, bytes: 0, cells: 0, peakCells: 0, parseMs: 0, drawMs: 0, rtt: 0, t0: 0 } : null;
   let perfEl = null;
 
@@ -435,6 +465,17 @@
         row.appendChild(head); row.appendChild(barEl);
         rankingEl.appendChild(row);
       }
+      // debug section: only the App (?debug=1) pushes s.debug; mirror the live
+      // flood/pour/spout state so the toggles read right even after a reopen.
+      const on = !!s.debug;
+      debugSep.hidden = !on; debugRow.hidden = !on;
+      if (on) {
+        const dbg = s.dbg || {};
+        pourBtn.classList.toggle("on", !!dbg.pour);
+        floodBtn.classList.toggle("on", !!dbg.flood);
+        const sz = dbg.spout || 1;
+        for (const b of brushRow.querySelectorAll("button")) b.classList.toggle("on", +b.dataset.size === sz);
+      }
     }
 
     if (TE && TE.listen) TE.listen("menu:state", function (e) { try { render(e.payload || {}); } catch (_) {} });
@@ -468,6 +509,17 @@
     });
     resetBtn.addEventListener("click", function () { emitCmd({ action: "reset" }); selfHide(); });
     exitBtn.addEventListener("click", function () { if (TE && TE.emit) TE.emit("app:exit"); });
+
+    // debug controls — emit intents; the App owns the WS and forwards them + reflects
+    // the resulting state back via menu:state (so we don't track truth here).
+    for (let n = 1; n <= 5; n++) {
+      const b = document.createElement("button");
+      b.textContent = String(n); b.title = "brush " + n + "×" + n; b.dataset.size = n;
+      b.addEventListener("click", function () { emitCmd({ action: "spout", size: n }); });
+      brushRow.appendChild(b);
+    }
+    pourBtn.addEventListener("click", function () { emitCmd({ action: "pour", on: !pourBtn.classList.contains("on") }); });
+    floodBtn.addEventListener("click", function () { emitCmd({ action: "flood", on: !floodBtn.classList.contains("on") }); });
   }
 
   // --- render constants (MUST match the server's sim: W/H/colours/spout) ---
@@ -847,18 +899,39 @@
   // Menu
   // ---------------------------------------------------------------------------
   // The bar's ≡ no longer drops an inline panel (it was clipped by this tiny window).
-  // In the shell it opens a SEPARATE, frameless popover window (label "menu", declared in
-  // tauri.conf, positioned + shown by Rust beside the bottle on this 'menu:open' event);
+  // In the shell it toggles a SEPARATE, frameless popover window (label "menu", declared in
+  // tauri.conf, positioned/shown/hidden by Rust beside the bottle on this 'menu:toggle' event);
   // that window renders the menu and sends actions back as 'menu:cmd' (handled below). In
   // a plain browser there's no shell, so ≡ falls back to toggling the inline panel for dev.
   menuBtn.addEventListener("click", function (e) {
     e.stopPropagation();
-    if (TE && TE.emit) { TE.emit("menu:open"); return; }              // shell: open popover window
+    if (TE && TE.emit) { TE.emit("menu:toggle"); return; }            // shell: toggle popover window
     menu.hidden = !menu.hidden; if (!menu.hidden) updateChrome();     // browser: inline fallback
   });
   document.addEventListener("click", function (e) {
     if (!appWindow && !menu.hidden && !menu.contains(e.target) && e.target !== menuBtn) menu.hidden = true;
   });
+  // Browser-dev fallback: in the App, ≡ opens the popover window and the debug fill
+  // controls live there (runMenuWindow). In a plain browser there's no shell/popover,
+  // so wire the SAME controls into the inline menu and talk to the WS directly.
+  if (DEBUG && !TE) {
+    debugSep.hidden = false; debugRow.hidden = false;
+    const send = function (m) { if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(m)); };
+    const sync = function () {
+      pourBtn.classList.toggle("on", dbg.pour);
+      floodBtn.classList.toggle("on", dbg.flood);
+      for (const b of brushRow.querySelectorAll("button")) b.classList.toggle("on", +b.dataset.size === dbg.spout);
+    };
+    for (let n = 1; n <= 5; n++) {
+      const b = document.createElement("button");
+      b.textContent = String(n); b.title = "brush " + n + "×" + n; b.dataset.size = n;
+      b.addEventListener("click", function (e) { e.stopPropagation(); dbg.spout = n; send({ type: "spout", size: n }); sync(); });
+      brushRow.appendChild(b);
+    }
+    pourBtn.addEventListener("click", function (e) { e.stopPropagation(); dbg.pour = !dbg.pour; send({ type: "pour", on: dbg.pour }); sync(); });
+    floodBtn.addEventListener("click", function (e) { e.stopPropagation(); dbg.flood = !dbg.flood; send({ type: "flood", on: dbg.flood }); sync(); });
+    sync();
+  }
   resetBtn.addEventListener("click", function () {
     // server-authoritative: ask the server to empty the room's canvas (browser inline path)
     if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: "reset" }));
@@ -1115,42 +1188,8 @@
     }, 1000);
   }
 
-  // --- debug panel (?debug=1): pick the pour brush size 1..5, plus two pour helpers.
-  //   1..5    → set the N×N spout brush (server applies it to YOUR pours)
-  //   💧pour  → keep the spout saturated so you can SEE the chosen brush streaming
-  //   ⏬fill   → fast direct bottom-fill (quickly fill the bottle to test the archive)
-  // Server clears pour/flood on disconnect. ---
-  function startDebug() {
-    if (!DEBUG) return;
-    const send = function (m) { if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(m)); };
-    const bar = document.createElement("div");
-    bar.setAttribute("data-no-drag", "");
-    bar.style.cssText = "position:fixed;right:6px;top:6px;z-index:9999;display:flex;gap:3px;align-items:center;" +
-      "font:11px 'JetBrains Mono',monospace";
-    const OFF = "rgba(0,0,0,.6)", ON = "#7fffd4";
-    function mk(label, title) {
-      const b = document.createElement("button");
-      b.textContent = label; if (title) b.title = title;
-      b.setAttribute("data-no-drag", "");
-      b.style.cssText = "padding:3px 6px;border-radius:5px;border:1px solid #7fffd4;background:" + OFF + ";color:#7fffd4;cursor:pointer";
-      bar.appendChild(b); return b;
-    }
-    function lit(b, on) { b.style.background = on ? ON : OFF; b.style.color = on ? "#0a0a0a" : "#7fffd4"; }
-    const tag = document.createElement("span"); tag.textContent = "spout"; tag.style.color = "#7fffd4"; bar.appendChild(tag);
-    let size = 1; const sizeBtns = [];
-    for (let n = 1; n <= 5; n++) {
-      const b = mk(String(n), "brush " + n + "×" + n);
-      b.addEventListener("click", function (e) { e.stopPropagation(); size = n; send({ type: "spout", size: n }); sizeBtns.forEach(function (x, i) { lit(x, i + 1 === size); }); });
-      sizeBtns.push(b);
-    }
-    sizeBtns.forEach(function (x, i) { lit(x, i + 1 === size); });
-    let pour = false, fill = false;
-    const pourB = mk("💧pour", "pour through the spout continuously (see the brush)");
-    pourB.addEventListener("click", function (e) { e.stopPropagation(); pour = !pour; lit(pourB, pour); send({ type: "pour", on: pour }); });
-    const fillB = mk("⏬fill", "fast direct bottom-fill (quick archive test)");
-    fillB.addEventListener("click", function (e) { e.stopPropagation(); fill = !fill; lit(fillB, fill); send({ type: "flood", on: fill }); });
-    document.body.appendChild(bar);
-  }
+  // Debug fill controls (?debug=1) live in the menu popover now (see runMenuWindow);
+  // the App forwards them to the WS as spout/pour/flood in the menu:cmd handler below.
 
   // --- bridge to the menu popover window (separate #menu window) ---
   // We own the room + WS, so the popover sends us intents ('menu:cmd') and we act;
@@ -1162,7 +1201,8 @@
       list.push({ name: u.name, css: u.css, count: u.count || 0, you: !!u.you });
     }
     list.sort(function (a, b) { return b.count - a.count; });
-    return { players: list, buried: buriedCount(), room: roomId, link: shareLink() };
+    return { players: list, buried: buriedCount(), room: roomId, link: shareLink(),
+             debug: DEBUG, dbg: { flood: dbg.flood, pour: dbg.pour, spout: dbg.spout } };
   }
   function startMenuBridge() {
     if (!TE) return;                       // browser dev has no shell event bus
@@ -1176,6 +1216,9 @@
           case "join":     if (d.room) switchRoom(d.room); break;
           case "setName":  if (d.name) { playerName = d.name; localStorage.setItem("titb.name", playerName); reconnect(); } break;
           case "reset":    if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: "reset" })); break;
+          case "flood":    dbg.flood = !!d.on;  if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: "flood", on: dbg.flood })); break;
+          case "pour":     dbg.pour  = !!d.on;  if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: "pour",  on: dbg.pour  })); break;
+          case "spout":    dbg.spout = Math.max(1, Math.min(5, d.size | 0)); if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: "spout", size: dbg.spout })); break;
         }
         push();                            // reflect the change back immediately
       });
@@ -1189,7 +1232,6 @@
   requestAnimationFrame(tick);
   connect();
   startPerf();
-  startDebug();
   startMenuBridge();
 })();
 </script>

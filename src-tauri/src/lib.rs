@@ -66,20 +66,22 @@ pub fn run() {
         });
       });
 
-      // ---- menu popover window (separate frameless window; tauri.conf visible:false) ----
-      // The bar's ≡ emits "menu:open"; we place the popover just left of the bottle window
-      // (so it never covers it) and show it. It hides itself on blur (click-away), like a
-      // native popover. "app:exit" (the menu's exit button) quits the whole app.
-      if let Some(menu) = handle.get_webview_window("menu") {
-        let menu_blur = menu.clone();
-        menu.on_window_event(move |ev| {
-          if let tauri::WindowEvent::Focused(false) = ev {
-            let _ = menu_blur.hide();
+      // Debug builds (`npm run dev`): flip the overlay into ?debug so the menu's fill
+      // tools appear with zero manual setup. Release builds (`npm run build`) stay clean.
+      if cfg!(debug_assertions) {
+        if let Some(main) = handle.get_webview_window("main") {
+          if let Ok(url) = "https://sandtogether.indiegames.design/#overlay&debug".parse() {
+            let _ = main.navigate(url);
           }
-        });
+        }
       }
+
+      // ---- menu popover window (separate frameless window; tauri.conf visible:false) ----
+      // The bar's ≡ emits "menu:toggle": tap to open, tap again to close. It deliberately
+      // does NOT hide on blur — so you can drag the bottle or click elsewhere while the menu
+      // stays open; only another ≡ tap closes it. "app:exit" (menu's exit) quits the app.
       let open_h = handle.clone();
-      handle.listen_any("menu:open", move |_| {
+      handle.listen_any("menu:toggle", move |_| {
         let (main, menu) = match (
           open_h.get_webview_window("main"),
           open_h.get_webview_window("menu"),
@@ -87,6 +89,11 @@ pub fn run() {
           (Some(m), Some(n)) => (m, n),
           _ => return,
         };
+        // tap-again-to-close: if the popover is already up, just hide it
+        if menu.is_visible().unwrap_or(false) {
+          let _ = menu.hide();
+          return;
+        }
         // place the popover just left of the bottle window, top-aligned, clamped on-screen
         if let (Ok(p), Ok(ms)) = (main.outer_position(), menu.outer_size()) {
           let x = (p.x - ms.width as i32 - 8).max(0);
