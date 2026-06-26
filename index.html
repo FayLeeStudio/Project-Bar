@@ -636,7 +636,6 @@
   const SPAWN_GAP = 75;      // source rides this far above the surface (matches server)
   const CAMERA_ANCHOR = 0.382; // pin the settled surface ~0.382 down → sand fills lower ~0.618
   const SPOUT_X = { 1: 30, 2: 50, 3: 10, 4: 70 }; // evenly spaced across W=80, centre-out (must match server)
-  const DEFAULT_SPOUT = { name: "", x: 40 };  // always-on, name-less spout shown when nobody's pouring (W/2 = centre)
 
   // --- rendered grid. In patch mode it's a standalone mirror updated by snapshot/patch.
   // In lockstep mode (Phase 2) it's reassigned to ALIAS the local sim's grid (authSim /
@@ -830,22 +829,24 @@
     ctx.imageSmoothingEnabled = false;
     ctx.drawImage(view, 0, 0, W, viewRows + 2, 0, -frac * S, W * S, (viewRows + 2) * S);
 
-    // bulbs at the live source row (just above the surface; same rule as server). Each
-    // spout previews the CURRENT stratum's palette for its slot (so its colour advances
-    // with height), and when nobody is pouring a single name-less default spout is shown
-    // so the bottle always has a visible source.
+    // bulbs at the live source row (just above the surface; same rule as server). All 4
+    // slot spouts are ALWAYS drawn (even with nobody in the room) so the bottle shows its
+    // full set of sources; each previews the CURRENT stratum's palette for its slot (so its
+    // colour advances with height). The id label above a spout is drawn only for slots that
+    // an online player occupies — empty slots show the figure but no name.
     const srcRow = Math.max(0, Math.round(smSurface) - SPAWN_GAP);
     const bulbCy = Math.round((srcRow - cameraY) * S);
     const pal = LEVEL_PALETTES[levelAtHeight(worldH() - 1 - Math.round(smSurface))];
     if (bulbCy > -(SRC_R * S + 14) && bulbCy < viewRows * S) {
-      let any = false;
+      const slotName = {};
       for (const id in players) {
         const u = players[id];
         if (u.online === false) continue;
-        any = true;
-        drawSource(u, bulbCy, rgbToHex(pal[u.slot - 1]));
+        slotName[u.slot] = u.name;
       }
-      if (!any) drawSource(DEFAULT_SPOUT, bulbCy, rgbToHex(pal[0]));
+      for (let slot = 1; slot <= 4; slot++) {
+        drawSource({ name: slotName[slot] || "", x: SPOUT_X[slot] || 40 }, bulbCy, rgbToHex(pal[slot - 1]));
+      }
     }
 
     drawHeightLabel();
