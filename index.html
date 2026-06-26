@@ -467,10 +467,10 @@
   // horizontal line, everything below keeps its palette, only the growing top takes the
   // higher level's. Pure position → deterministic & identical on every client; the grid
   // still stores slot-only, so no wire-protocol or privacy change (CLAUDE.md §1/§5 intact).
-  const LEVEL_ROWS = 100;          // rows per stratum (1 row ≈ 1 displayed "m"; the "100 m" first level — tune freely)
+  const LEVEL_ROWS = 500;          // rows per stratum (1 row ≈ 1 displayed "m"; the "500 m" first level — tune freely)
   const LEVEL_PALETTES = [
-    USER_COLORS.map(function (c) { return c.rgb; }),    // level 0 (floor…100 m): the base palette
-    // level 1 (100 m+): 易拉罐 / soda-can stratum — cola red, brushed aluminium, gold, steel blue
+    USER_COLORS.map(function (c) { return c.rgb; }),    // level 0 (floor…500 m): the base palette
+    // level 1 (500 m+): 易拉罐 / soda-can stratum — cola red, brushed aluminium, gold, steel blue
     [[217, 72, 59], [197, 203, 208], [232, 163, 61], [62, 124, 177]],
   ];
   function levelAtHeight(hb) {     // hb = rows above the deposit floor → palette index (clamped)

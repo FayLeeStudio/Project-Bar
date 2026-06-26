@@ -215,10 +215,10 @@ font-family: 'JetBrains Mono', ui-monospace, monospace;
 
 > 颜色不仅看槽位，还看**沉积高度**——像地质层 / 关卡推进。
 
-- 每 `LEVEL_ROWS`（默认 100，≈ 显示的 100 m）行**从沉积底面往上**算一层；每层是一套 **4 色调色板**（一槽一色）。沙粒颜色 = `LEVEL_PALETTES[level][slot-1] + cellJitter`。
+- 每 `LEVEL_ROWS`（默认 500，≈ 显示的 500 m）行**从沉积底面往上**算一层；每层是一套 **4 色调色板**（一槽一色）。沙粒颜色 = `LEVEL_PALETTES[level][slot-1] + cellJitter`。
 - **某格的层 = 它距底面的高度**：`level = floor((worldH-1-wy) / LEVEL_ROWS)`（钳到最后一套）。因为已沉降沙粒距底面的高度**不变**（新沙只往顶上堆；归档把整座沉积**整体等量下移**），它的层、它的颜色在落定那刻就**锁死**——分界是一条**固定的水平线**，线下保持原配色，只有顶部新沙用更高层的配色。完全符合"切换只换新出的沙、已堆积的不变"。
 - 纯**位置函数** → 确定性、各客户端一致；网格仍只存槽位（0–4），**不动线协议、不动隐私红线**（CLAUDE.md §1/§5）。
-- `LEVEL_PALETTES[0]` = **基础配色**（也是 `USER_COLORS` / 排行色块的身份色）：`#53CCD3 #92D6D8 #D6E0D9 #F0D5B7`（海与沙的冷→暖渐变）。`LEVEL_PALETTES[1]`（100 m 以上）= **易拉罐配色**：cola red `#D9483B` / 拉丝铝 `#C5CBD0` / 金 `#E8A33D` / 钢蓝 `#3E7CB1`。更高层可继续往 `LEVEL_PALETTES[2..]` 加。常量在 `index.html`：`LEVEL_ROWS` / `LEVEL_PALETTES`。
+- `LEVEL_PALETTES[0]` = **基础配色**（也是 `USER_COLORS` / 排行色块的身份色）：`#53CCD3 #92D6D8 #D6E0D9 #F0D5B7`（海与沙的冷→暖渐变）。`LEVEL_PALETTES[1]`（500 m 以上）= **易拉罐配色**：cola red `#D9483B` / 拉丝铝 `#C5CBD0` / 金 `#E8A33D` / 钢蓝 `#3E7CB1`。更高层可继续往 `LEVEL_PALETTES[2..]` 加。常量在 `index.html`：`LEVEL_ROWS` / `LEVEL_PALETTES`。
 - **出沙口**预览**当前层**配色（颜色随高度推进）；**总高度** readout 见下「高度计」。
 
 **多人出口布局：**
